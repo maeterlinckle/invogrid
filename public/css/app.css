@@ -1,0 +1,1530 @@
+/* ==========================================================================
+   InvoGrid — base stylesheet
+
+   The visual language is deliberately Kitwell's: same CSS-variable theming,
+   same [data-theme] switch on <html>, same header lockup, same component
+   vocabulary. The two are sibling internal tools and should read as a family.
+   This is InvoGrid's own copy of it, not a shared file — nothing here is
+   loaded from, or has to stay byte-identical to, the other application.
+
+   Where it differs, and why:
+     - The accent is indigo rather than blue, so the two tools are told apart
+       at a glance without leaving the family.
+     - The desktop navigation bar appears at 900px rather than 1150px: this
+       menu has three top-level items, not six, so it fits far sooner.
+     - There is a document/data split-pane vocabulary Kitwell has no need for.
+   ========================================================================== */
+
+:root {
+    --font-sans: system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+    --font-mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+
+    --radius: 10px;
+    --radius-sm: 7px;
+    --tap: 44px;
+
+    --space-1: 0.25rem;
+    --space-2: 0.5rem;
+    --space-3: 0.75rem;
+    --space-4: 1rem;
+    --space-5: 1.5rem;
+    --space-6: 2rem;
+
+    --shadow: 0 1px 2px rgb(15 23 42 / 8%), 0 2px 8px rgb(15 23 42 / 6%);
+}
+
+/* --- Light theme (default) ------------------------------------------------ */
+[data-theme="light"] {
+    --bg: #f1f5f9;
+    --bg-raised: #ffffff;
+    --bg-sunken: #e2e8f0;
+    --bg-hover: #f8fafc;
+    --text: #0f172a;
+    --text-muted: #52627a;
+    --border: #cbd5e1;
+    --border-strong: #94a3b8;
+
+    --accent: #4338ca;
+    --accent-text: #ffffff;
+    --accent-hover: #3730a3;
+    --accent-soft: #e0e7ff;
+
+    --ok: #15803d;
+    --ok-soft: #dcfce7;
+    /* Amber-800 rather than amber-700: on the soft amber background the lighter
+       shade measures 4.42:1, just under the 4.5:1 needed for normal text. */
+    --warn: #854d0e;
+    --warn-soft: #fef3c7;
+    --danger: #b91c1c;
+    --danger-soft: #fee2e2;
+    --info: #0369a1;
+    --info-soft: #e0f2fe;
+
+    --focus: #4338ca;
+    color-scheme: light;
+}
+
+/* --- Dark theme ----------------------------------------------------------- */
+[data-theme="dark"] {
+    --bg: #0b1120;
+    --bg-raised: #172033;
+    --bg-sunken: #0f172a;
+    --bg-hover: #1e293b;
+    --text: #f1f5f9;
+    --text-muted: #a3b1c6;
+    --border: #33415c;
+    --border-strong: #64748b;
+
+    --accent: #a5b4fc;
+    --accent-text: #10132e;
+    --accent-hover: #c7d2fe;
+    --accent-soft: #312e81;
+
+    --ok: #4ade80;
+    --ok-soft: #14532d;
+    --warn: #fbbf24;
+    --warn-soft: #52350a;
+    --danger: #f87171;
+    --danger-soft: #601616;
+    /* Sky-300 rather than sky-400: on the deep soft-blue background the darker
+       shade measures 4.42:1, just under 4.5:1 for normal text. */
+    --info: #7dd3fc;
+    --info-soft: #0c4a6e;
+
+    --focus: #c7d2fe;
+    color-scheme: dark;
+}
+
+/* --- Reset ---------------------------------------------------------------- */
+*, *::before, *::after { box-sizing: border-box; }
+
+/* The browser's own `[hidden] { display: none }` lives in the user-agent
+   stylesheet, so any author rule setting `display` beats it — and `.btn` sets
+   `display: inline-flex`. This is the one place `!important` is the right tool:
+   `hidden` means hidden, and no component should have to opt in. */
+[hidden] { display: none !important; }
+
+html { -webkit-text-size-adjust: 100%; }
+
+body {
+    margin: 0;
+    font-family: var(--font-sans);
+    font-size: 17px;
+    line-height: 1.55;
+    background: var(--bg);
+    color: var(--text);
+    -webkit-font-smoothing: antialiased;
+}
+
+h1, h2, h3, h4 { line-height: 1.25; margin: 0 0 var(--space-3); }
+h1 { font-size: 1.6rem; letter-spacing: -0.01em; }
+h2 { font-size: 1.25rem; }
+h3 { font-size: 1.05rem; }
+p  { margin: 0 0 var(--space-3); }
+
+a { color: var(--accent); }
+a:hover { color: var(--accent-hover); }
+
+:focus-visible {
+    outline: 3px solid var(--focus);
+    outline-offset: 2px;
+    border-radius: var(--radius-sm);
+}
+
+.sr-only {
+    position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px;
+    overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; border: 0;
+}
+
+.skip-link {
+    position: absolute; left: -9999px; top: 0; z-index: 100;
+    background: var(--accent); color: var(--accent-text);
+    padding: var(--space-3) var(--space-4); border-radius: 0 0 var(--radius) 0;
+}
+.skip-link:focus { left: 0; }
+
+.container {
+    width: 100%;
+    max-width: 1200px;
+    margin-inline: auto;
+    padding-inline: var(--space-4);
+}
+
+.muted { color: var(--text-muted); }
+.mono { font-family: var(--font-mono); font-size: 0.86em; }
+.nowrap { white-space: nowrap; }
+.break { word-break: break-word; }
+.text-danger { color: var(--danger); }
+
+/* --- Header and navigation ------------------------------------------------ */
+.site-header {
+    background: var(--bg-raised);
+    border-bottom: 1px solid var(--border);
+    position: sticky;
+    top: 0;
+    z-index: 40;
+}
+
+.header-inner {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: var(--space-3);
+    min-height: 60px;
+}
+
+.brand {
+    display: inline-flex;
+    align-items: center;
+    gap: var(--space-2);
+    font-weight: 700;
+    color: var(--text);
+    padding-block: var(--space-2);
+}
+
+/* The logo is the link home; the wordmark next to it is not. */
+.brand-home {
+    display: inline-flex;
+    align-items: center;
+    border-radius: var(--radius-sm);
+    color: inherit;
+    text-decoration: none;
+}
+.brand-home:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+
+/* The IG monogram, shown until a logo is uploaded. */
+.brand-mark {
+    display: grid;
+    place-items: center;
+    width: 34px; height: 34px;
+    border-radius: 9px;
+    background: var(--accent);
+    color: var(--accent-text);
+    font-size: 0.8rem;
+    font-weight: 800;
+    letter-spacing: 0.03em;
+}
+
+.brand-name { font-size: 1.02rem; }
+
+.nav-toggle {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: var(--tap); height: var(--tap);
+    background: transparent;
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    color: var(--text);
+    cursor: pointer;
+}
+
+.nav-toggle-bars { display: grid; gap: 4px; }
+.nav-toggle-bars span {
+    display: block; width: 20px; height: 2px;
+    background: currentColor; border-radius: 2px;
+}
+
+.primary-nav {
+    display: none;
+    position: absolute;
+    left: 0; right: 0;
+    top: 100%;
+    background: var(--bg-raised);
+    border-bottom: 1px solid var(--border);
+    box-shadow: var(--shadow);
+    padding: var(--space-3) var(--space-4) var(--space-4);
+
+    /* The open menu hangs off a sticky header, so it does not scroll away with
+       the page. Without a height of its own, anything past the bottom of the
+       screen is unreachable. --header-h is measured and written by app.js when
+       the menu opens; 60px is the header's min-height and the fallback. dvh so
+       a phone's collapsing address bar does not hide the last item. */
+    max-height: calc(100vh - var(--header-h, 60px));
+    max-height: calc(100dvh - var(--header-h, 60px));
+    overflow-y: auto;
+
+    /* Scrolling to the end of the menu must not then scroll the page behind. */
+    overscroll-behavior: contain;
+    -webkit-overflow-scrolling: touch;
+}
+
+.primary-nav.is-open { display: block; }
+
+.nav-list {
+    list-style: none;
+    margin: 0 0 var(--space-3);
+    padding: 0;
+    display: grid;
+    gap: var(--space-1);
+}
+
+.nav-link {
+    display: flex;
+    align-items: center;
+    min-height: var(--tap);
+    padding: var(--space-2) var(--space-3);
+    border-radius: var(--radius-sm);
+    color: var(--text);
+    text-decoration: none;
+    font-weight: 600;
+}
+
+.nav-link:hover { background: var(--bg-hover); color: var(--text); }
+
+.nav-link.is-active {
+    background: var(--accent-soft);
+    color: var(--text);
+    box-shadow: inset 3px 0 0 var(--accent);
+}
+
+/* A destination a later stage builds. Shown so the shape of the application is
+   visible, but not a link: a menu item that 404s is worse than one that says
+   plainly it is not ready. */
+.nav-link.is-pending {
+    color: var(--text-muted);
+    cursor: default;
+    gap: var(--space-2);
+    font-weight: 500;
+}
+.nav-link.is-pending:hover { background: transparent; }
+
+.nav-divider {
+    height: 1px;
+    background: var(--border);
+    margin: var(--space-2) 0;
+}
+
+.nav-account {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: var(--space-2);
+    padding-top: var(--space-3);
+    border-top: 1px solid var(--border);
+}
+
+.nav-user {
+    display: flex;
+    align-items: center;
+    gap: var(--space-2);
+    flex: 1 1 auto;
+    padding: var(--space-2) var(--space-3);
+}
+/* It is a link now — to your own password — so it needs to say so on hover
+   without turning the name blue and underlined in the middle of the bar. */
+a.nav-user { color: inherit; text-decoration: none; border-radius: var(--radius-sm); }
+a.nav-user:hover { background: var(--bg-hover); }
+a.nav-user:hover .nav-user-name { text-decoration: underline; }
+
+.nav-user-text { display: grid; line-height: 1.2; }
+.nav-user-name { font-weight: 600; }
+.nav-user-role { font-size: 0.82rem; color: var(--text-muted); font-weight: 500; }
+
+.avatar {
+    display: grid; place-items: center;
+    width: 34px; height: 34px;
+    border-radius: 50%;
+    background: var(--bg-sunken);
+    color: var(--text);
+    font-weight: 700;
+    flex: 0 0 auto;
+}
+
+.nav-logout { margin: 0; }
+
+/* --- Navigation groups ---------------------------------------------------- */
+/* A <details> element: an accordion in the drawer, a drop-down on the bar. One
+   structure, and it works with JavaScript switched off. */
+.nav-group summary { list-style: none; cursor: pointer; }
+.nav-group summary::-webkit-details-marker { display: none; }
+
+.nav-group-toggle {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: var(--space-2);
+    width: 100%;
+}
+
+/* The disclosure triangle, wherever a <details> is used as one, so the shape
+   means the same thing everywhere. */
+.caret {
+    width: 0; height: 0;
+    border-left: 5px solid transparent;
+    border-right: 5px solid transparent;
+    border-top: 5px solid currentColor;
+    flex: 0 0 auto;
+    transition: transform 120ms ease;
+}
+details[open] > summary .caret { transform: rotate(180deg); }
+
+.nav-sublist {
+    list-style: none;
+    margin: var(--space-1) 0 var(--space-2);
+    padding: 0 0 0 var(--space-4);
+    display: grid;
+    gap: 2px;
+    border-left: 2px solid var(--border);
+}
+.nav-sublink { font-weight: 500; }
+
+/* Desktop navigation ------------------------------------------------------- */
+/* The horizontal bar appears at 900px. Three top-level items, the account block
+   and the brand come to roughly 700px of content, so the bar has room well
+   before the container's 1200px cap. Below that the drawer is used instead: a
+   vertical list cannot wrap, and it is the same control phones already use. */
+@media (min-width: 900px) {
+    .nav-toggle { display: none; }
+
+    /* Block padding is a mobile tap-target concern; on a desktop the row's own
+       min-height and alignment do that job. */
+    .brand { padding-block: 0; }
+
+    .primary-nav {
+        display: flex;
+        position: static;
+        align-items: center;
+        justify-content: space-between;
+        flex: 1 1 auto;
+        gap: var(--space-4);
+        background: none;
+        border: 0;
+        box-shadow: none;
+        padding: 0;
+
+        /* The drawer's own scroll, undone: here the nav is part of the header
+           row, so a max-height would clip the drop-downs. */
+        max-height: none;
+        overflow: visible;
+    }
+
+    .nav-list {
+        display: flex;
+        align-items: center;
+        gap: var(--space-1);
+        margin: 0;
+        /* Never wrap: a menu that reflows onto a second row doubles the header
+           height and pushes the page down. */
+        flex-wrap: nowrap;
+    }
+
+    .nav-item { flex: 0 0 auto; }
+
+    .site-header .btn,
+    .nav-account .btn,
+    .brand-name { white-space: nowrap; }
+
+    .nav-account { flex: 0 0 auto; border: 0; padding-top: 0; flex-wrap: nowrap; }
+
+    .nav-link { min-height: 40px; padding-inline: var(--space-2); white-space: nowrap; }
+
+    /* The menu text stands on the foot of the logo.
+       Everything in the bar bottom-aligns against a shared floor, and the brand
+       and the menu text are each lifted off it by the same variable, so they
+       cannot drift apart.
+
+       `align-items: baseline` is the obvious thing to reach for and is a trap:
+       a menu item is display:flex, and a flex container's baseline is
+       synthesised from its first child — which differs between a plain link and
+       a group's <summary>. `line-height: 1` collapses the line box onto the
+       text, after which one shared floor value lines them up. */
+    .header-inner { align-items: flex-end; --bar-floor: 14px; }
+    .header-actions { align-self: center; }
+    .primary-nav { align-items: flex-end; }
+    .nav-account { align-self: center; }
+    .nav-list { align-items: flex-end; }
+
+    .brand { padding-bottom: var(--bar-floor); }
+
+    .nav-list > .nav-item > .nav-link,
+    .nav-list > .nav-item > .nav-group > .nav-group-toggle {
+        align-items: flex-end;
+        line-height: 1;
+        padding-bottom: var(--bar-floor);
+    }
+
+    /* The caret is a shape, not a letter: it belongs against the middle of the
+       text rather than on the line its feet stand on. */
+    .nav-list > .nav-item > .nav-group > .nav-group-toggle .caret { align-self: center; }
+
+    /* The underline sits at the foot of the bar rather than under the text, so
+       it reads as an underline for the whole row instead of a strike through
+       the descenders. */
+    .nav-link.is-active {
+        box-shadow: inset 0 -3px 0 var(--accent);
+        background: transparent;
+    }
+
+    .nav-item-group { position: relative; }
+
+    /* The panel floats over the page rather than pushing the bar taller. */
+    .nav-group > .nav-sublist {
+        position: absolute;
+        top: calc(100% + 4px);
+        left: 0;
+        z-index: 50;
+        min-width: 15rem;
+        margin: 0;
+        padding: var(--space-2);
+        border: 1px solid var(--border);
+        border-radius: var(--radius);
+        background: var(--bg-raised);
+        box-shadow: var(--shadow);
+    }
+
+    .nav-group-toggle { width: auto; }
+
+    /* A group is rendered `open` when the current page is inside it, so the
+       menu shows where you are. On a phone that expands an accordion, which is
+       the point. Here the panel floats, so an auto-opened one would land on top
+       of the page just navigated to. :focus-within rather than a class, so this
+       still works with JavaScript off. */
+    .nav-group[data-nav-autoopen]:not(:focus-within) > .nav-sublist { display: none; }
+
+    /* On a desktop the bar shows the avatar alone; the name is in the footer
+       and on the account screen. */
+    .nav-user-text { display: none; }
+    .nav-user { padding: 0; flex: 0 0 auto; }
+}
+
+/* --- Main ----------------------------------------------------------------- */
+main.container { padding-block: var(--space-5) var(--space-6); }
+
+.page-head {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: var(--space-3);
+    margin-bottom: var(--space-5);
+}
+.page-head h1 { margin-bottom: var(--space-1); }
+.page-head p { margin: 0; }
+
+.section-title {
+    margin: var(--space-6) 0 var(--space-3);
+    font-size: 0.85rem;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    color: var(--text-muted);
+}
+
+/* --- Cards ---------------------------------------------------------------- */
+.card {
+    background: var(--bg-raised);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: var(--space-4);
+    margin-bottom: var(--space-4);
+    box-shadow: var(--shadow);
+}
+
+.card-grid {
+    display: grid;
+    gap: var(--space-4);
+    grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
+}
+
+.notice-card { border-left: 4px solid var(--accent); }
+
+/* Status cards: a coloured edge rather than a coloured panel, so the text
+   inside keeps the page's normal contrast. */
+.card-ok     { border-left: 4px solid var(--ok); }
+.card-warn   { border-left: 4px solid var(--warn); }
+.card-danger { border-left: 4px solid var(--danger); }
+
+.plain-list { margin: 0; padding-left: var(--space-4); }
+.plain-list li + li { margin-top: var(--space-1); }
+
+/* --- Sub-navigation ------------------------------------------------------- */
+.subnav {
+    display: flex;
+    flex-wrap: wrap;
+    gap: var(--space-1);
+    margin-bottom: var(--space-4);
+    border-bottom: 1px solid var(--border);
+}
+
+.subnav-link {
+    display: inline-flex;
+    align-items: center;
+    min-height: var(--tap);
+    padding: var(--space-2) var(--space-3);
+    color: var(--text-muted);
+    text-decoration: none;
+    font-weight: 600;
+    border-bottom: 3px solid transparent;
+    margin-bottom: -1px;
+}
+.subnav-link:hover { color: var(--text); }
+.subnav-link.is-active { color: var(--text); border-bottom-color: var(--accent); }
+
+/* --- Stats ----------------------------------------------------------------
+   Compact by intent. These are a glanceable summary above the day's work, not
+   the point of the page.
+
+   auto-fit rather than auto-fill: a row with fewer cards than it has room for
+   should stretch across the width rather than leave a gap at the right. */
+.stat-grid {
+    display: grid;
+    gap: var(--space-2);
+    grid-template-columns: repeat(auto-fit, minmax(145px, 1fr));
+    margin-bottom: var(--space-4);
+}
+
+.stat-card {
+    background: var(--bg-raised);
+    border: 1px solid var(--border);
+    border-left: 4px solid var(--border-strong);
+    border-radius: var(--radius);
+    padding: var(--space-3);
+    display: grid;
+    gap: 2px;
+    align-content: start;
+}
+
+.stat-value { font-size: 1.5rem; font-weight: 700; line-height: 1.1; }
+.stat-label { font-size: 0.85rem; line-height: 1.35; color: var(--text-muted); }
+
+.stat-card.stat-danger { border-left-color: var(--danger); }
+.stat-card.stat-danger .stat-value { color: var(--danger); }
+.stat-card.stat-warn { border-left-color: var(--warn); }
+.stat-card.stat-warn .stat-value { color: var(--warn); }
+.stat-card.stat-info { border-left-color: var(--info); }
+.stat-card.stat-ok { border-left-color: var(--ok); }
+
+/* --- Tables --------------------------------------------------------------- */
+.table-wrap {
+    overflow-x: auto;
+    background: var(--bg-raised);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    margin-bottom: var(--space-4);
+    -webkit-overflow-scrolling: touch;
+}
+
+.table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 0.96rem;
+}
+
+.table th, .table td {
+    padding: var(--space-3);
+    text-align: left;
+    border-bottom: 1px solid var(--border);
+    vertical-align: top;
+}
+
+.table thead th {
+    background: var(--bg-sunken);
+    font-size: 0.8rem;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    color: var(--text-muted);
+    position: sticky;
+    top: 0;
+}
+
+.table tbody tr:last-child td { border-bottom: 0; }
+.table tbody tr:hover { background: var(--bg-hover); }
+.table-compact th, .table-compact td { padding: var(--space-2) var(--space-3); }
+
+/* Money reads as a column of figures, so it lines up on the right and uses
+   tabular digits — a column of amounts whose decimal points wander is a column
+   nobody can add up by eye. */
+.table .amount {
+    text-align: right;
+    font-variant-numeric: tabular-nums;
+    white-space: nowrap;
+}
+
+.row-muted td { opacity: 0.62; }
+.cell-sub { font-size: 0.85rem; color: var(--text-muted); }
+.empty { text-align: center; color: var(--text-muted); padding: var(--space-6) !important; }
+
+/* The actions column: one or more buttons in the last cell of a row.
+ *
+ * The cell stays a table-cell. Anything that takes it out of table layout —
+ * `display: flex` in particular — stops it stretching to the row height, and
+ * since the row separator is a border-bottom on the cell, its line is then
+ * drawn short of the others. Inline layout means `gap` does not apply, hence
+ * the margin.
+ */
+td.actions { white-space: nowrap; vertical-align: middle; }
+td.actions > * { vertical-align: middle; }
+td.actions > * + * { margin-left: var(--space-1); }
+
+.inline-form { display: inline; margin: 0; }
+
+/* --- Badges and chips ----------------------------------------------------- */
+.badge {
+    display: inline-block;
+    padding: 2px 10px;
+    border-radius: 999px;
+    font-size: 0.78rem;
+    font-weight: 600;
+    background: var(--bg-sunken);
+    color: var(--text);
+    white-space: nowrap;
+}
+
+.badge-ok { background: var(--ok-soft); color: var(--ok); }
+.badge-warn { background: var(--warn-soft); color: var(--warn); }
+.badge-danger { background: var(--danger-soft); color: var(--danger); }
+.badge-info { background: var(--info-soft); color: var(--info); }
+.badge-accent { background: var(--accent-soft); }
+.badge-muted { background: var(--bg-sunken); color: var(--text-muted); }
+
+.chip {
+    background: var(--bg-sunken);
+    border-radius: 999px;
+    padding: 4px 12px;
+    font-size: 0.82rem;
+}
+
+.meta-list {
+    list-style: none;
+    margin: 0 0 var(--space-3);
+    padding: 0;
+    display: grid;
+    gap: var(--space-1);
+    font-size: 0.92rem;
+}
+
+/* --- Buttons -------------------------------------------------------------- */
+.btn {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: var(--space-2);
+    min-height: var(--tap);
+    padding: var(--space-2) var(--space-4);
+    border: 1px solid var(--border-strong);
+    border-radius: var(--radius-sm);
+    background: var(--bg-raised);
+    color: var(--text);
+    font: inherit;
+    font-weight: 600;
+    text-decoration: none;
+    cursor: pointer;
+    transition: background-color 0.12s ease, border-color 0.12s ease;
+}
+
+.btn:hover { background: var(--bg-hover); color: var(--text); }
+.btn:active { transform: translateY(1px); }
+
+.btn-primary {
+    background: var(--accent);
+    border-color: var(--accent);
+    color: var(--accent-text);
+}
+.btn-primary:hover { background: var(--accent-hover); border-color: var(--accent-hover); color: var(--accent-text); }
+
+.btn-warning { background: var(--warn-soft); border-color: var(--warn); color: var(--warn); }
+.btn-danger  { background: var(--danger-soft); border-color: var(--danger); color: var(--danger); }
+
+.btn-ghost { background: transparent; border-color: transparent; }
+.btn-ghost:hover { background: var(--bg-hover); }
+
+.btn-sm { min-height: 38px; padding: var(--space-1) var(--space-3); font-size: 0.9rem; }
+.btn-lg { min-height: 52px; font-size: 1.05rem; padding-inline: var(--space-5); }
+.btn-block { width: 100%; }
+.btn-icon .btn-label { display: none; }
+
+/* In the drawer there is room for the label; on the bar there is not. */
+@media (max-width: 899px) {
+    .btn-icon .btn-label { display: inline; }
+}
+
+/* --- Forms ---------------------------------------------------------------- */
+.form { max-width: 720px; }
+.form.card { max-width: 720px; }
+
+.field { margin-bottom: var(--space-4); }
+
+.field-row {
+    display: grid;
+    gap: var(--space-4);
+    grid-template-columns: 1fr;
+}
+@media (min-width: 640px) {
+    .field-row { grid-template-columns: 1fr 1fr; }
+}
+
+.label { display: block; font-weight: 600; margin-bottom: var(--space-1); }
+
+.input {
+    display: block;
+    width: 100%;
+    min-height: var(--tap);
+    padding: var(--space-2) var(--space-3);
+    font: inherit;
+    font-size: 1rem;                 /* >=16px stops iOS zooming on focus */
+    color: var(--text);
+    background: var(--bg-raised);
+    border: 1px solid var(--border-strong);
+    border-radius: var(--radius-sm);
+}
+
+.input:focus { border-color: var(--accent); }
+.input.has-error { border-color: var(--danger); background: var(--danger-soft); }
+
+select.input { appearance: auto; }
+textarea.input { min-height: 120px; resize: vertical; }
+
+.field-hint { margin: var(--space-1) 0 0; font-size: 0.86rem; color: var(--text-muted); }
+.field-error { margin: var(--space-1) 0 0; font-size: 0.88rem; font-weight: 600; color: var(--danger); }
+
+.input-with-button { display: flex; flex-wrap: wrap; gap: var(--space-2); align-items: stretch; }
+.input-with-button .input { flex: 1 1 12rem; min-width: 0; }
+.btn-inline { white-space: nowrap; border: 1px solid var(--border); }
+
+.checkbox {
+    display: flex;
+    align-items: flex-start;
+    gap: var(--space-3);
+    min-height: var(--tap);
+    padding: var(--space-2);
+    border-radius: var(--radius-sm);
+    cursor: pointer;
+}
+.checkbox:hover { background: var(--bg-hover); }
+.checkbox input[type="checkbox"] {
+    width: 22px; height: 22px;
+    margin-top: 2px;
+    accent-color: var(--accent);
+    flex: 0 0 auto;
+}
+
+.fieldset {
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    padding: var(--space-4);
+    margin: 0 0 var(--space-4);
+}
+.fieldset legend { padding-inline: var(--space-2); font-weight: 700; }
+
+.form-actions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: var(--space-3);
+    align-items: center;
+}
+
+/* A form inside .form-actions is a wrapper around one button (each POST needs
+   its own form and CSRF token), so it must not add layout of its own. */
+.form-actions > form { margin: 0; }
+
+/*
+ * Filter bars come in two shapes: unlabelled boxes and ones with visible labels
+ * above each control. Both have to put every control on the same bottom edge,
+ * which is why this aligns to flex-end rather than centring — centring lines up
+ * the middles of columns of different heights, so a submit button with no label
+ * above it floats above the boxes beside it.
+ */
+.filter-bar {
+    display: flex;
+    flex-wrap: wrap;
+    gap: var(--space-2);
+    align-items: flex-end;
+    margin-bottom: var(--space-4);
+}
+.filter-bar .field { margin-bottom: 0; flex: 1 1 180px; }
+.filter-bar .btn { flex: 0 0 auto; }
+
+/* Six filters rather than two, so the free-text box gets its own line on a
+   narrow screen and the hints under the boxes do not shove the row apart. */
+.filter-bar .field-wide { flex: 1 1 100%; }
+.filter-bar .field-hint { margin-bottom: 0; }
+.filter-bar .filter-actions {
+    display: flex;
+    gap: var(--space-2);
+    flex: 0 0 auto;
+    align-self: flex-start;
+    padding-top: 1.9rem; /* clears the label row beside it */
+}
+
+/* --- Flash messages ------------------------------------------------------- */
+.flash-stack { display: grid; gap: var(--space-2); margin-bottom: var(--space-4); }
+
+.flash {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: var(--space-3);
+    padding: var(--space-3) var(--space-4);
+    border-radius: var(--radius-sm);
+    border-left: 4px solid var(--border-strong);
+    background: var(--bg-raised);
+    font-weight: 500;
+    transition: opacity 220ms ease, transform 220ms ease;
+}
+
+.flash.is-leaving { opacity: 0; transform: translateY(-4px); }
+
+.flash-success { background: var(--ok-soft); border-left-color: var(--ok); color: var(--ok); }
+.flash-error   { background: var(--danger-soft); border-left-color: var(--danger); color: var(--danger); }
+.flash-warning { background: var(--warn-soft); border-left-color: var(--warn); color: var(--warn); }
+.flash-info    { background: var(--info-soft); border-left-color: var(--info); color: var(--info); }
+
+.flash-close {
+    background: none; border: 0; cursor: pointer;
+    font-size: 1.4rem; line-height: 1; color: inherit; opacity: 0.7;
+    min-width: 32px; min-height: 32px;
+}
+.flash-close:hover { opacity: 1; }
+
+/* --- Auth screens --------------------------------------------------------- */
+.body-centred {
+    min-height: 100vh;
+    min-height: 100dvh;
+    display: grid;
+    place-items: center;
+    background: var(--bg);
+    padding: var(--space-4);
+}
+
+.auth-shell { width: 100%; max-width: 430px; display: grid; gap: var(--space-4); justify-items: center; }
+
+.auth-card {
+    width: 100%;
+    background: var(--bg-raised);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: var(--space-5);
+    box-shadow: var(--shadow);
+}
+
+.auth-brand {
+    display: flex; align-items: center; gap: var(--space-2);
+    margin-bottom: var(--space-5);
+    font-weight: 700; font-size: 1.1rem;
+}
+
+.auth-title { margin-bottom: var(--space-1); }
+.auth-subtitle { color: var(--text-muted); margin-bottom: var(--space-5); font-size: 0.95rem; }
+.auth-help { margin: var(--space-4) 0 0; font-size: 0.88rem; text-align: center; }
+
+.theme-toggle-standalone { border: 1px solid var(--border); background: var(--bg-raised); }
+
+/* A moon carved out of a disc: filled in dark, crescent in light. */
+.theme-icon {
+    width: 18px; height: 18px;
+    border-radius: 50%;
+    background: currentColor;
+    box-shadow: inset -6px -3px 0 0 var(--bg-raised);
+}
+[data-theme="dark"] .theme-icon { box-shadow: none; }
+
+/* --- Error pages ---------------------------------------------------------- */
+.error-page { text-align: center; padding-block: var(--space-6); }
+.error-status { font-size: 3rem; font-weight: 800; color: var(--text-muted); margin: 0; line-height: 1; }
+
+/* --- Footer --------------------------------------------------------------- */
+.site-footer {
+    border-top: 1px solid var(--border);
+    background: var(--bg-raised);
+    padding-block: var(--space-4);
+    font-size: 0.85rem;
+}
+.footer-inner { display: flex; flex-wrap: wrap; gap: var(--space-2); justify-content: space-between; }
+.footer-brand { display: grid; gap: 2px; }
+.footer-brand a { color: inherit; }
+
+/* --- Branding -------------------------------------------------------------
+   The logo is constrained by height and never by width, so it keeps its
+   proportions whatever shape it is; max-width stops a very wide wordmark from
+   pushing the navigation off the bar. object-fit: contain letterboxes rather
+   than stretches, which is the whole point. */
+
+.brand-logo-wrap { display: inline-flex; align-items: flex-end; }
+
+/* Logo and wordmark side by side on the same baseline — the text aligns with
+   the bottom of the logo rather than its middle, which is what makes the pair
+   read as one lockup instead of two loose objects. */
+.brand-stack {
+    display: flex;
+    align-items: flex-end;
+    gap: var(--space-2);
+    min-width: 0;
+}
+
+.brand-logo {
+    display: block;
+    height: 34px;
+    width: auto;
+    max-width: 190px;
+    object-fit: contain;
+}
+
+/* The wordmark's own line box carries space under the baseline; trimming it is
+   what lines the text bottom up with the foot of the logo. */
+.brand-stack .brand-name { line-height: 1; padding-bottom: 2px; }
+
+/* Both variants ship in the markup and CSS picks: the theme can change without
+   a page load, so the server cannot know which one to send. Where only one was
+   uploaded it is used for both — one logo is better than none, and it is then
+   the only .brand-logo present, so nothing hides it. */
+[data-theme="light"] .brand-logo-dark,
+[data-theme="dark"]  .brand-logo-light { display: none; }
+
+@media (min-width: 900px) {
+    /* 176px, not 128.
+       A wordmark logo is commonly 4:1 or wider, and at 36px tall that wants
+       144px. The old 128px cap did not distort it — `object-fit: contain`
+       letterboxes rather than squashes — but it silently drew a 4:1 logo at 32px
+       instead of 36 and left a strip of empty box between it and the wordmark.
+       176px clears everything up to about 4.8:1 at full height, and the wordmark
+       beside it is separately capped, so the bar still cannot reach two rows. */
+    .brand-stack-logo .brand-logo { height: 36px; max-width: 176px; }
+
+    /* Item for item with the menu: same size, same weight, standing on the same
+       line. max-width is the safety net — APP_NAME is whatever the operator
+       typed, and an unbounded wordmark is the one thing in this bar that could
+       put it back on two rows. */
+    .brand-stack .brand-name {
+        font-size: inherit;
+        font-weight: 600;
+        line-height: 1;
+        padding-bottom: 0;
+        max-width: 12rem;
+        overflow: hidden;
+        text-overflow: ellipsis;
+    }
+}
+
+/* --- Spacing between blocks that are not cards ----------------------------
+   .card carries only a bottom margin, so a card that follows something else
+   sits flush against it. */
+.card + .section-title { margin-top: var(--space-5); }
+
+/* --- The document / data split --------------------------------------------
+   The scan on one side, what was read off it on the other. Comparing the two is
+   the entire job of the review screen this grows into, so they go side by side
+   wherever there is room and stack where there is not — scrolling between a
+   figure and the number it should match is how transposition errors get missed.
+
+   The breakpoint is higher than the navigation's 900px: two useful columns need
+   more width than a menu does, and at 1000px each pane would be too narrow to
+   read a line item in. */
+.doc-split {
+    display: grid;
+    gap: var(--space-4);
+    grid-template-columns: 1fr;
+    margin-bottom: var(--space-4);
+}
+
+@media (min-width: 1100px) {
+    .doc-split { grid-template-columns: 1fr 1fr; align-items: start; }
+
+    /* Each pane scrolls against the viewport rather than the page, so the
+       transcription can be read past the end of the scan beside it without the
+       other pane sliding away. */
+    .doc-pane {
+        position: sticky;
+        top: calc(var(--header-h, 60px) + var(--space-4));
+        max-height: calc(100dvh - var(--header-h, 60px) - var(--space-6));
+        overflow-y: auto;
+        overscroll-behavior: contain;
+    }
+}
+
+.doc-pane {
+    background: var(--bg-raised);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: var(--space-4);
+    min-width: 0;
+}
+
+.doc-pane h3 { margin-top: 0; }
+.doc-pane h3 + h3,
+.doc-pane .page-strip + h3 { margin-top: var(--space-5); }
+
+.pdf-frame {
+    display: block;
+    width: 100%;
+    height: 60vh;
+    min-height: 380px;
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    background: var(--bg-sunken);
+}
+
+/* Page thumbnails: a row that scrolls sideways rather than a grid that reflows.
+   The pages are in order and the order matters, so keeping them on one line
+   keeps that visible. */
+.page-strip {
+    display: flex;
+    gap: var(--space-3);
+    overflow-x: auto;
+    padding-bottom: var(--space-2);
+    -webkit-overflow-scrolling: touch;
+}
+
+.page-thumb { margin: 0; flex: 0 0 auto; width: 130px; }
+
+.page-thumb img {
+    display: block;
+    width: 100%;
+    height: auto;
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    /* White regardless of theme: a scan of white paper on a dark card reads as
+       a hole in the page otherwise. */
+    background: #ffffff;
+}
+
+.page-thumb figcaption {
+    margin-top: var(--space-1);
+    font-size: 0.8rem;
+    color: var(--text-muted);
+    text-align: center;
+}
+
+/* The transcription, keeping the document's own line breaks and column spacing
+   — which is what makes a line-item table still read as a table. */
+.ocr-text {
+    margin: 0;
+    padding: var(--space-3);
+    max-height: 60vh;
+    overflow: auto;
+    background: var(--bg-sunken);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    font-family: var(--font-mono);
+    font-size: 0.82rem;
+    line-height: 1.5;
+    white-space: pre-wrap;
+    word-break: break-word;
+    tab-size: 4;
+}
+
+.annotation-summary {
+    padding: var(--space-3);
+    margin-bottom: var(--space-3);
+    border-left: 4px solid var(--accent);
+    border-radius: var(--radius-sm);
+    background: var(--bg-sunken);
+    font-size: 0.94rem;
+}
+.annotation-summary p:last-child { margin-bottom: 0; }
+.annotation-summary .plain-list { margin-bottom: var(--space-3); }
+
+/* --- Extracted fields, shaped like the form they will become ---------------
+   Read-only for now: editing arrives in a later build. Laid out as fields with
+   labels rather than as a table of values, so turning it into a form is
+   swapping each value for an input — the labels, grouping and order are already
+   the ones a person will edit in. */
+.field-readonly { margin-bottom: var(--space-3); }
+.field-readonly .label { margin-bottom: 0; font-size: 0.82rem; color: var(--text-muted); font-weight: 600; }
+
+.field-value {
+    display: block;
+    min-height: 1.6em;
+    padding: 2px 0;
+    font-size: 1.02rem;
+    word-break: break-word;
+}
+
+/* An absent value is stated rather than left blank: a gap reads as a rendering
+   fault, and "not found" is frequently the correct answer here. */
+.field-value.is-empty { color: var(--text-muted); font-style: italic; font-size: 0.94rem; }
+
+.review-notes li { margin-bottom: var(--space-1); }
+
+/* A line description can carry several lines of its own — product code, full
+   description, spec — and squeezing that into one row loses what the prompt
+   went out of its way to keep. */
+.line-description { min-width: 18rem; white-space: pre-line; }
+
+/* --- The review screen ---------------------------------------------------- */
+
+/* `.field-row` is two columns by default; the review form uses it for three
+   dates and four totals, which want to keep going rather than wrap in pairs. */
+@media (min-width: 640px) {
+    .field-row:has(> .field:nth-child(3)) { grid-template-columns: repeat(3, 1fr); }
+    .field-row:has(> .field:nth-child(4)) { grid-template-columns: repeat(4, 1fr); }
+}
+
+/* A <details> whose summary is the button that opens it. The marker is removed
+   because the button already says what it does, and a disclosure triangle
+   beside "Create in Clear Books" reads as decoration rather than as a control. */
+details.fieldset > summary { list-style: none; cursor: pointer; display: inline-flex; }
+details.fieldset > summary::-webkit-details-marker { display: none; }
+details.fieldset[open] > summary { margin-bottom: var(--space-4); }
+
+/* Editable line items. The inputs sit flush in their cells so the table still
+   reads as a table rather than as a wall of boxes, and the numeric columns stay
+   narrow enough that the description keeps the width it needs. */
+.table td > .input,
+.table td > textarea.input {
+    width: 100%;
+    min-width: 0;
+    padding-block: var(--space-2);
+}
+
+.table td.amount > .input { text-align: right; font-variant-numeric: tabular-nums; }
+.table td > textarea.input { resize: vertical; min-height: 3.2rem; }
+
+/* The transcription beside the scan scrolls on its own rather than stretching
+   the pane: on a long document it is several screens of text and the reviewer
+   wants the PDF to stay where it is. */
+.doc-pane .ocr-text { max-height: 22rem; overflow-y: auto; }
+
+/* On the review screen the PDF is the reference the whole job is checked
+   against, so it gets more height than it does on the pipeline record. */
+.doc-pane .pdf-frame { height: 72vh; }
+
+/* --- The prompt editor ---------------------------------------------------- */
+
+/* A prompt is several screens of prose with structure that matters — headings,
+   bullet rules, a JSON example. Monospaced so the example lines up, and tall,
+   because scrolling a four-line box to read four kilobytes is how a rule gets
+   edited out by accident. */
+.prompt-editor {
+    min-height: 60vh;
+    resize: vertical;
+    line-height: 1.5;
+    tab-size: 2;
+    white-space: pre;
+    overflow-wrap: normal;
+    overflow-x: auto;
+}
+
+/* The variable panel: each one opens to show what it holds today. */
+details.fieldset > summary .cell-sub { display: block; margin-top: 2px; }
+details.fieldset + details.fieldset { margin-top: calc(var(--space-3) * -1 + var(--space-4)); }
+
+/* The capability list on the users screen. A tick rather than a bullet: the
+   list is "what this role can do", and every line is a yes. */
+.tick-list {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+    display: grid;
+    gap: var(--space-2);
+}
+
+.tick-list li {
+    position: relative;
+    padding-left: 1.4em;
+    line-height: 1.4;
+}
+
+.tick-list li::before {
+    content: "";
+    position: absolute;
+    left: 0;
+    top: 0.42em;
+    width: 0.5em;
+    height: 0.8em;
+    border: solid var(--accent);
+    border-width: 0 2px 2px 0;
+    transform: rotate(45deg);
+}
+
+/* A radio row reads the same as a checkbox row — a control, a bold name, and a
+   sentence of what choosing it means. */
+.checkbox input[type="radio"] {
+    width: 22px; height: 22px;
+    margin-top: 2px;
+    accent-color: var(--accent);
+    flex: 0 0 auto;
+}
+
+.checkbox .cell-sub { display: block; margin-top: 2px; }
+
+/* A form with three short fields and nothing else on the page. Full width
+   would put the label a hand's width from its box on a desktop. */
+.form-narrow { max-width: 32rem; }
+
+/* A <fieldset> used only to switch a whole form off for somebody who may read
+   it but not change it. One `disabled` beats the same attribute on forty
+   controls — the one that gets forgotten is a box somebody types into for a
+   minute before finding out it was never going to save. */
+.form-body {
+    border: 0;
+    padding: 0;
+    margin: 0;
+    min-width: 0;
+}
+
+.form-body:disabled {
+    opacity: 0.75;
+}
+
+.form-body:disabled .input,
+.form-body:disabled select {
+    background: var(--bg-sunken);
+    cursor: not-allowed;
+}
+
+/* The activity feed: a time on the left, what happened on the right. A table
+   would be three columns of which one is always short and one is always long,
+   which reads worse than it sounds. */
+.feed { list-style: none; margin: 0 0 var(--space-4); padding: 0; display: grid; gap: var(--space-2); }
+
+.feed-item {
+    display: flex;
+    flex-wrap: wrap;
+    gap: var(--space-1) var(--space-3);
+    padding: var(--space-2) var(--space-3);
+    border-left: 3px solid var(--border);
+    background: var(--bg-raised);
+    border-radius: 0 var(--radius-sm) var(--radius-sm) 0;
+}
+
+.feed-when { color: var(--text-muted); font-size: 0.88rem; flex: 0 0 auto; min-width: 9.5rem; }
+.feed-what { flex: 1 1 16rem; }
+.feed-what .cell-sub { display: block; }
+
+/* A failure's structured detail, folded away inside the event row. Open by
+   click rather than always visible: the history table is scanned far more often
+   than any one row is read. */
+.event-detail summary { cursor: pointer; }
+.event-detail .meta-list { margin-top: var(--space-2); }
+
+/* --- Logo previews on the branding screen --------------------------------- */
+
+/* Each preview sits on the ground its variant is *for*, not on the page's
+   current theme — a dark-mode logo previewed on a light card is an invisible
+   logo, and somebody would reasonably conclude the upload had failed. These two
+   are therefore fixed colours rather than theme variables, which is the one
+   place in this stylesheet where that is correct. */
+.logo-preview {
+    display: flex;
+    align-items: center;
+    gap: var(--space-3);
+    min-height: 84px;
+    padding: var(--space-4);
+    margin-bottom: var(--space-4);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+}
+
+.logo-preview img {
+    display: block;
+    max-height: 48px;
+    max-width: 100%;
+    width: auto;
+    object-fit: contain;
+}
+
+.logo-preview-light { background: #ffffff; color: #0f172a; }
+.logo-preview-dark  { background: #0b1120; color: #f1f5f9; }
+
+/* The monogram placeholder has to flip with the ground it is standing on. */
+.logo-preview-light .brand-mark { background: #4338ca; color: #ffffff; }
+.logo-preview-dark  .brand-mark { background: #a5b4fc; color: #10132e; }
+.logo-preview .muted { color: inherit; opacity: 0.65; }
+
+/* A file input is a browser widget with its own idea of padding; .input's
+   fixed height crops the button in some of them. */
+.input[type="file"] {
+    height: auto;
+    padding: var(--space-2);
+    line-height: 1.4;
+}
+
+/* --- Motion --------------------------------------------------------------- */
+
+/* Somebody who has asked their operating system for less motion has asked
+   every application on it, and the answer has to cover the page rather than the
+   three components that happened to be remembered. This replaces two
+   narrower blocks that killed the caret and the flash transitions and left the
+   nav drawer, the buttons and the flash's leaving transform still moving.
+
+   `.flash.is-leaving` also has its transform cancelled: a message that slides
+   away is still motion even when the slide is instant. */
+@media (prefers-reduced-motion: reduce) {
+    *, *::before, *::after {
+        transition-duration: 0.01ms !important;
+        animation-duration: 0.01ms !important;
+        animation-iteration-count: 1 !important;
+        scroll-behavior: auto !important;
+    }
+
+    .flash.is-leaving { transform: none; }
+}
+
+/* ==========================================================================
+   Print
+
+   Two parts, and the distinction matters. The `.print-*` classes below style
+   the dedicated print layout *on screen* — somebody looks at that page before
+   they print it, and a preview that looks nothing like the output is not a
+   preview. The print block at the end is the small set of changes that only
+   make sense on paper.
+
+   InvoGrid follows Kitwell here: a separate layout for anything meant to be
+   printed, rather than the ordinary page with its chrome hidden. Hiding the
+   navigation still ships it, and a printed record that quietly breaks when the
+   menu changes is one nobody notices until a supplier queries an invoice.
+   ========================================================================== */
+
+.print-body {
+    background: var(--bg-sunken);
+}
+
+/* The only chrome, and it is .no-print. Sticky so "Print this" is reachable
+   from the bottom of a long summary without scrolling back up. */
+.print-toolbar {
+    position: sticky;
+    top: 0;
+    z-index: 10;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: var(--space-3);
+    padding: var(--space-3) var(--space-4);
+    background: var(--bg-raised);
+    border-bottom: 1px solid var(--border);
+}
+
+/* A sheet of A4, near enough, so what is on screen is what comes out. */
+.print-sheet {
+    width: 100%;
+    max-width: 210mm;
+    min-height: 260mm;
+    margin: var(--space-5) auto;
+    padding: 16mm 14mm;
+    background: #ffffff;
+    color: #0f172a;
+    box-shadow: var(--shadow);
+}
+
+.print-head {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: var(--space-4);
+    padding-bottom: var(--space-4);
+    margin-bottom: var(--space-5);
+    border-bottom: 2px solid #0f172a;
+}
+
+.print-brand { display: flex; align-items: flex-end; gap: var(--space-3); min-width: 0; }
+
+/* Same aspect-ratio-safe treatment as the header: a height, an automatic
+   width, and a ceiling so a very wide logo cannot push the date off the sheet. */
+.print-logo {
+    display: block;
+    height: 40px;
+    width: auto;
+    max-width: 220px;
+    object-fit: contain;
+}
+
+.print-wordmark { font-size: 1.15rem; font-weight: 700; line-height: 1; padding-bottom: 2px; }
+
+.print-meta {
+    display: grid;
+    gap: 2px;
+    text-align: right;
+    font-size: 0.85rem;
+    color: #52627a;
+}
+
+.print-title { font-size: 1.5rem; margin-bottom: var(--space-1); }
+.print-subtitle { color: #52627a; margin-bottom: var(--space-5); }
+
+.print-block { margin-bottom: var(--space-5); break-inside: avoid; }
+
+.print-block h2 {
+    font-size: 0.78rem;
+    font-weight: 800;
+    letter-spacing: 0.09em;
+    text-transform: uppercase;
+    color: #52627a;
+    padding-bottom: var(--space-1);
+    margin-bottom: var(--space-3);
+    border-bottom: 1px solid #cbd5e1;
+}
+
+/* The Clear Books outcome, which is what somebody printing this wants to point
+   at. An indigo rule rather than a filled panel: a block of colour is a block
+   of ink, and this page exists to be printed. */
+.print-block-key { border-left: 4px solid #4338ca; padding-left: var(--space-4); }
+.print-block-pending { border-left: 4px solid #854d0e; padding-left: var(--space-4); }
+
+.print-pairs { display: grid; gap: var(--space-2); margin: 0; }
+.print-pairs > div { display: flex; gap: var(--space-3); align-items: baseline; }
+
+.print-pairs dt {
+    flex: 0 0 12rem;
+    font-weight: 600;
+    color: #52627a;
+}
+
+.print-pairs dd { margin: 0; flex: 1 1 auto; min-width: 0; }
+
+.print-pairs-totals > div { max-width: 24rem; justify-content: space-between; }
+.print-pairs-totals dd { text-align: right; flex: 0 0 auto; font-variant-numeric: tabular-nums; }
+
+.print-total {
+    padding-top: var(--space-2);
+    border-top: 1px solid #cbd5e1;
+    font-weight: 700;
+    font-size: 1.05rem;
+}
+.print-total dt { color: inherit; }
+
+.table-print { font-size: 0.92rem; }
+.table-print th, .table-print td { border-color: #cbd5e1; }
+.table-print tr { break-inside: avoid; }
+
+.print-list { margin: 0; padding-left: 1.2rem; }
+.print-list li { margin-bottom: var(--space-1); }
+.print-note-line { color: #52627a; font-size: 0.9rem; }
+
+.print-foot {
+    margin-top: var(--space-6);
+    padding-top: var(--space-3);
+    border-top: 1px solid #cbd5e1;
+    font-size: 0.8rem;
+    color: #52627a;
+}
+
+@media print {
+    @page { size: A4; margin: 12mm; }
+
+    .no-print { display: none !important; }
+
+    /* Anything from the ordinary layout, for the day somebody prints a normal
+       page — better a readable sheet than the navigation across the top of it. */
+    .site-header, .site-footer, .filter-bar, .form-actions,
+    .nav-toggle, .btn, .flash-stack { display: none !important; }
+
+    html, body {
+        background: #ffffff !important;
+        color: #000000;
+        margin: 0;
+        padding: 0;
+        font-size: 11pt;
+    }
+
+    /* The sheet is the page now: no shadow, no margin, no second set of edges
+       inside the printer's own. */
+    .print-sheet {
+        max-width: none;
+        min-height: 0;
+        margin: 0;
+        padding: 0;
+        box-shadow: none;
+    }
+
+    .card, .table-wrap { border: 1px solid #999; box-shadow: none; }
+
+    /* A table split over a page break repeats its headings rather than leaving
+       the second half as unlabelled columns. */
+    thead { display: table-header-group; }
+    tr, .print-block { break-inside: avoid; }
+
+    /* A link's href is invisible on paper, and a summary that says "see the
+       document" without saying where is a dead end. */
+    a[href^="http"]::after { content: " (" attr(href) ")"; font-size: 0.85em; word-break: break-all; }
+}

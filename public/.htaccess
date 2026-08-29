@@ -1,0 +1,35 @@
+# Apache configuration for the public document root.
+# (Nginx: see the sample server block in the README.)
+
+<IfModule mod_rewrite.c>
+    RewriteEngine On
+
+    # Redirect to HTTPS when the reverse proxy tells us the request arrived over
+    # plain HTTP. Harmless when TLS terminates here instead. /health and the
+    # webhook receiver are exempt from the host check only in that localhost is
+    # left alone, so a container health probe still works.
+    RewriteCond %{HTTPS} !=on
+    RewriteCond %{HTTP:X-Forwarded-Proto} !=https
+    RewriteCond %{HTTP_HOST} !^localhost [NC]
+    RewriteCond %{REQUEST_URI} !^/health$
+    RewriteRule ^ https://%{HTTP_HOST}%{REQUEST_URI} [L,R=301]
+
+    # Everything that is not a real file or directory goes to the front controller.
+    RewriteCond %{REQUEST_FILENAME} !-f
+    RewriteCond %{REQUEST_FILENAME} !-d
+    RewriteRule ^ index.php [L]
+</IfModule>
+
+<IfModule mod_headers.c>
+    Header always set X-Content-Type-Options "nosniff"
+    Header always set X-Frame-Options "SAMEORIGIN"
+    Header always set Referrer-Policy "strict-origin-when-cross-origin"
+</IfModule>
+
+# Never serve dotfiles.
+<FilesMatch "^\.">
+    Require all denied
+</FilesMatch>
+
+Options -Indexes
+DirectoryIndex index.php

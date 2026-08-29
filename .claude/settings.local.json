@@ -1,0 +1,7 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash('/c/Program Files/MariaDB 12.3/bin/mysql.exe' --defaults-extra-file=C:/Users/nick/AppData/Local/Temp/claude/J--Admin-Restricted-Claude-InvoGrid/678b10bb-f400-487a-a76a-8c6e01c38584/scratchpad/my-local.cnf -e 'CREATE DATABASE IF NOT EXISTS test_invogrid CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;')"
+    ]
+  }
+}

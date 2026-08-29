@@ -1,0 +1,4 @@
+# Belt and braces: the document root is /public, so nothing under /storage is
+# web-reachable in the first place. This is here for the mis-configured install
+# that points Apache at the project root instead.
+Require all denied

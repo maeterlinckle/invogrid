@@ -1,0 +1,21 @@
+# Local environment and secrets — never committed.
+.env
+
+# Runtime state: downloaded PDFs, rendered page images, uploaded logos, logs.
+/storage/logs/*
+/storage/uploads/*
+/storage/pdf/*
+/storage/pages/*
+
+# Lock files: created at runtime by the cron entry points, used only for flock.
+# queue.lock slipped into the repository once; it is not a file a checkout wants.
+/storage/*.lock
+
+!/storage/**/.gitkeep
+
+# Editor / OS noise
+.DS_Store
+Thumbs.db
+*.swp
+.idea/
+.vscode/
