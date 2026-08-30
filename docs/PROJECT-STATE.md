@@ -3,7 +3,7 @@
 A factual snapshot of what exists in the codebase **right now**, not a changelog.
 Read it before starting work; rewrite the parts that changed when finishing.
 
-**Last updated:** end of Prompt 13 (security review, polish, documentation).
+**Last updated:** install.sh and manage.sh (after Prompt 13).
 
 ---
 
@@ -54,6 +54,7 @@ Read it before starting work; rewrite the parts that changed when finishing.
 | Light/dark parity swept and asserted across every page | done |
 | Security review, permission sweep, pipeline audit | done |
 | README complete enough to deploy from scratch | done |
+| `install.sh` and `manage.sh`, modelled on the sibling projects | done |
 | Application settings / full activity log screens | not started |
 
 A document now runs the whole way on its own when everything resolves, and a
@@ -446,6 +447,9 @@ without a gate fails here rather than being found by whoever finds it.
 | Files arriving from a browser, and the three checks on them | `src/Core/Upload.php` |
 | Every route x every role, over real HTTP | `tests/permissions.php` |
 | Is every workflow step really implemented? | `tests/pipeline.php` |
+| First-time install on a server | `install.sh` |
+| Everything afterwards | `manage.sh` |
+| Every check an install needs, each with what to do | `src/Services/Doctor.php` |
 | The logo: serving it, and replacing it | `src/Controllers/BrandingController.php` |
 | The shell for anything meant to end up on paper | `templates/layouts/print.php` |
 | What counts as an acceptable password, in one place | `src/Core/PasswordPolicy.php` |
@@ -563,7 +567,7 @@ php bin/console.php settings:set <key>   set one, value read from stdin
 php bin/console.php key:generate    print a new APP_KEY
 php bin/console.php db:check        database reachable, schema current, key present
 php bin/console.php settings:list   which settings are configured (never values)
-php tests/smoke.php                 273 assertions; exits non-zero on failure
+php tests/smoke.php                 281 assertions; exits non-zero on failure
 php tests/pipeline.php              every workflow step: implemented, reachable, has run
 php tests/permissions.php <url>     every route x every role, over real HTTP
 php -S 127.0.0.1:8484 -t public bin/serve.php   development server
@@ -1938,3 +1942,93 @@ Verified that the check can genuinely fail, by adding a route and watching it be
 caught. It checks that a path is mentioned *somewhere* in the document, not that
 a specific table row exists — enough to catch a forgotten route, not enough to
 catch a row that has drifted in its details.
+
+## 30. install.sh and manage.sh
+
+Modelled on the sibling projects — Kitwell and the Production Tracker — so
+somebody who administers one can administer all three. Same helper vocabulary
+(`say`/`step`/`ok`/`info`/`warn`/`die`), same `--quiet`/`--yes` options, same
+`env_get`/`env_set`, same permission model.
+
+**The update takes the Production Tracker's shape, not Kitwell's**, because it
+is the better one: with no argument it clones the repository into a temp
+directory and installs from there, so an update is one command on a server that
+has no checkout of its own. Kitwell's demands a source directory. A directory
+can still be passed, and has to be when the machine cannot reach a private
+GitHub — the failure message says so rather than just reporting a clone error.
+
+### What is different here, and why
+
+| | |
+|---|---|
+| No Composer anything | InvoGrid has no `vendor/`. `install-composer` and `composer-install` are gone rather than carried over dead. |
+| **poppler is a first-class check** | It is the one local dependency without which no document can be read at all. The installer refuses to finish without `pdftoppm`, and `status` reports it above the fold. |
+| Two cron jobs, not one | The queue worker every minute, the Clear Books cache hourly, plus the nightly backup. Without the first, nothing is ever processed. |
+| `webhook-secret` | Generates, stores and prints the Paperless shared secret. Printed once, because that is the only moment anybody can copy it into the Paperless workflow. |
+| `test` | Runs all three harnesses. "Is this install sound?" is a question with an answer. |
+| `queue` / `refresh` / `retry` | The pipeline has command-line equivalents; the sibling projects have no pipeline. |
+| Backup skips `storage/pages` | A page image is re-rendered from the PDF beside it in seconds. Including them doubles every backup to save a step that costs nothing. |
+| Users are by **username** | Not email. Every user command takes a username. |
+
+### The console layer
+
+`manage.sh` never touches the database directly. Anything that does goes through
+`bin/console.php`, which grew the commands to make that possible: `doctor`,
+`stats`, `queue:retry`, `user:list`, `user:password`, `user:role`,
+`user:activate`, `user:deactivate`, `user:unlock`.
+
+That is not ceremony. The rules that matter live in the models — a username
+never changes, an account is deactivated rather than deleted, the last active
+administrator cannot be demoted or switched off — and going through the model
+means they hold on the command line exactly as they do on the web. Verified:
+`console user:deactivate nick` on the only administrator is refused with the
+same sentence the web screen gives.
+
+### `App\Services\Doctor`
+
+Every check in one pass, grouped: PHP, Configuration, Storage, Database, Tools,
+Integrations, Pipeline. Each row carries `status`, `detail` **and `hint`** —
+a check that reports `FAIL: storage` and stops has told the reader nothing they
+did not already suspect, so there is a smoke assertion that every non-`ok` row
+has a hint.
+
+It also supersedes `DashboardController::setupGaps()`, which was a second list
+of what a working install needs. The dashboard now calls `Doctor::setupGaps()`.
+
+Two checks worth knowing about:
+
+- **APP_KEY is tested, not just read.** A truncated or re-encoded key is set and
+  useless, and the failure otherwise surfaces much later as a token that will
+  not decrypt. `Doctor` does an encrypt/decrypt round trip.
+- **An overdue queue is a warning.** Jobs due and nothing taking them means the
+  cron entry is missing or failing — the single most common way a working
+  install stops working, and one that reports itself nowhere else.
+
+### Asserted, so the scripts cannot rot
+
+`tests/smoke.php` fails if: a `manage.sh` case label has no function behind it;
+either script calls a `bin/` or `tests/` file that does not exist; either calls
+a console verb that is not implemented; `cron-install` stops naming both jobs;
+the installer stops refusing to finish without `pdftoppm`; or a `tar` over the
+application directory loses its `--exclude=./.env`.
+
+That last one matters most: an update that copied `.env` would replace `APP_KEY`
+and turn every stored credential into an unreadable blob, with no error at the
+moment it happened. Verified the assertion catches it by removing the flag and
+watching it fail.
+
+### What was tested, and what could not be
+
+Run for real on the development machine: `help`, `status`, `users`, `stats`,
+`doctor`, `health`, `migrate --status`, `queue --status`, `webhook-secret`
+(rotated and restored), `test` (all three harnesses), every argument-error path,
+the root guard, and `install.sh --dry-run` end to end.
+
+`create-admin.php` accepting a piped password was tested for real, because
+`install.sh` depends on it and a wrong guess there breaks the install at its
+last step.
+
+**Not run here**: the parts needing root, systemd, apt/dnf or a real MariaDB
+service — package installation, the vhosts, the firewall, cron installation,
+backup and restore. Those are read-checked and syntax-checked only. First
+install on a real server should be `--dry-run` first.

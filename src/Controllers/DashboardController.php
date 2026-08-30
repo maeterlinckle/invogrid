@@ -9,8 +9,7 @@ use App\Models\AuditLog;
 use App\Models\Document;
 use App\Models\DocumentEvent;
 use App\Models\Setting;
-use App\Services\Llm\LlmFactory;
-use App\Services\PdfRenderer;
+use App\Services\Doctor;
 
 final class DashboardController extends Controller
 {
@@ -99,64 +98,8 @@ final class DashboardController extends Controller
             // What still has to be filled in before a document can get all the
             // way through. Shown to administrators only; there is nothing a
             // reviewer could do about it.
-            'setupGaps' => $this->setupGaps(),
+            'setupGaps' => Doctor::setupGaps(),
         ]);
     }
 
-    /**
-     * The credentials and settings a working pipeline needs, and whether each
-     * one is present.
-     *
-     * @return array<int,array{label:string,done:bool,hint:string}>
-     */
-    private function setupGaps(): array
-    {
-        $checks = [
-            [
-                'label' => 'PDF page rendering',
-                'done'  => PdfRenderer::isAvailable(),
-                'hint'  => 'poppler-utils provides pdftoppm. Without it, nothing can be read.',
-            ],
-            [
-                'label' => 'Paperless address and API token',
-                'done'  => Setting::isConfigured('paperless_base_url') && Setting::isConfigured('paperless_token'),
-                'hint'  => 'Needed to pull document metadata and the source PDF.',
-            ],
-            [
-                'label' => 'Webhook shared secret',
-                'done'  => Setting::isConfigured('paperless_webhook_secret'),
-                'hint'  => 'The Paperless workflow presents this; anything else is rejected.',
-            ],
-            [
-                'label' => 'Clear Books OAuth2 credentials and business id',
-                'done'  => Setting::isConfigured('clearbooks_client_id')
-                    && Setting::isConfigured('clearbooks_client_secret')
-                    && Setting::isConfigured('clearbooks_business_id'),
-                'hint'  => 'Needed to read the supplier and account code lists, and to submit.',
-            ],
-        ];
-
-        // Only the providers actually selected. Complaining about an OpenAI key
-        // on a site that has chosen Anthropic for both stages is noise, and
-        // noise in a checklist is what teaches people to stop reading it.
-        $seen = [];
-
-        foreach (LlmFactory::STAGES as $stage) {
-            $provider = LlmFactory::provider($stage);
-
-            if (isset($seen[$provider])) {
-                continue;
-            }
-
-            $seen[$provider] = true;
-
-            $checks[] = [
-                'label' => ucfirst($provider) . ' API key',
-                'done'  => LlmFactory::isConfigured($stage),
-                'hint'  => 'Selected for the ' . $stage . ' stage (' . LlmFactory::model($stage) . ').',
-            ];
-        }
-
-        return $checks;
-    }
 }

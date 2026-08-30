@@ -978,6 +978,193 @@ check('every script the README names exists', (static function (): bool {
     return $gone === [];
 })());
 
+echo "\nThe install and management scripts\n";
+
+check('both scripts exist and are executable-ish',
+    is_file(dirname(__DIR__) . '/install.sh') && is_file(dirname(__DIR__) . '/manage.sh'));
+
+/*
+ * Every command manage.sh dispatches to must have a function behind it.
+ *
+ * A case label with no `cmd_` function is a command that prints "command not
+ * found" at the moment somebody needs it, which on a server at 2am is the
+ * worst possible time to discover a typo.
+ */
+check('every manage.sh command has a function behind it', (static function (): bool {
+    $sh = (string) file_get_contents(dirname(__DIR__) . '/manage.sh');
+
+    // The dispatch block only — the usage text mentions the same words.
+    $from = strpos($sh, 'case "$command" in');
+
+    if ($from === false) {
+        return false;
+    }
+
+    preg_match_all('/^\s{4}([a-z|-]+)\)\s+(cmd_[a-z_]+)/m', substr($sh, $from), $matches, PREG_SET_ORDER);
+
+    $missing = [];
+
+    foreach ($matches as [, $label, $function]) {
+        if (!preg_match('/^' . preg_quote($function, '/') . '\(\)/m', $sh)) {
+            $missing[] = $label . ' -> ' . $function . '()';
+        }
+    }
+
+    if ($missing !== []) {
+        echo '        ' . implode("\n        ", $missing) . "\n";
+    }
+
+    return $matches !== [] && $missing === [];
+})());
+
+/*
+ * Every application script the two shell scripts invoke must exist.
+ *
+ * This is the failure that actually happened while writing the README: a
+ * documented `--verbose` flag that was never implemented. A shell script naming
+ * a file that has been renamed fails the same way, later, on somebody else's
+ * server.
+ */
+check('every bin/ and tests/ script the shell scripts call exists', (static function (): bool {
+    $missing = [];
+
+    foreach (['install.sh', 'manage.sh'] as $name) {
+        $sh = (string) file_get_contents(dirname(__DIR__) . '/' . $name);
+
+        // Comment lines are stripped first. A comment naming a placeholder
+        // path is documentation, not a call, and treating it as one made this
+        // assertion fail on its own explanatory text.
+        $code = implode("\n", array_filter(
+            explode("\n", $sh),
+            static fn (string $line): bool => !preg_match('/^\s*#/', $line)
+        ));
+
+        preg_match_all('#\b((?:bin|tests)/[a-z-]+\.php)#', $code, $matches);
+
+        foreach (array_unique($matches[1]) as $path) {
+            if (!is_file(dirname(__DIR__) . '/' . $path)) {
+                $missing[] = $name . ' calls ' . $path;
+            }
+        }
+    }
+
+    if ($missing !== []) {
+        echo '        ' . implode("\n        ", $missing) . "\n";
+    }
+
+    return $missing === [];
+})());
+
+check('every console command the shell scripts call is implemented', (static function (): bool {
+    $console = (string) file_get_contents(dirname(__DIR__) . '/bin/console.php');
+    $missing = [];
+
+    foreach (['install.sh', 'manage.sh'] as $name) {
+        $sh = (string) file_get_contents(dirname(__DIR__) . '/' . $name);
+
+        /*
+         * `console <verb>` and `bin/console.php <verb>`, both of which appear.
+         *
+         * A verb is either `group:action` or one of the two bare ones. Matching
+         * any bare word after "console" swept up the prose in the file header —
+         * "goes through bin/console.php so it uses the application's own
+         * models" — and reported a missing command called `so`.
+         */
+        preg_match_all(
+            '/(?:console(?:\.php)?)\s+([a-z]+:[a-z-]+|doctor|stats)\b/',
+            $sh,
+            $matches
+        );
+
+        foreach (array_unique($matches[1]) as $verb) {
+            if (!str_contains($console, "case '" . $verb . "':")) {
+                $missing[] = $name . ' calls console ' . $verb;
+            }
+        }
+    }
+
+    if ($missing !== []) {
+        echo '        ' . implode("\n        ", $missing) . "\n";
+    }
+
+    return $missing === [];
+})());
+
+// The queue and the cache refresh are what make the application run at all.
+// A cron block that names the wrong script is an install that looks fine and
+// processes nothing.
+check('cron-install writes both jobs, naming scripts that exist', (static function (): bool {
+    $sh = (string) file_get_contents(dirname(__DIR__) . '/manage.sh');
+
+    return str_contains($sh, 'bin/process-queue.php')
+        && str_contains($sh, 'bin/refresh-clearbooks.php')
+        && str_contains($sh, '/etc/cron.d/invogrid');
+})());
+
+// poppler is the one local dependency without which no document can be read.
+check('the installer refuses to finish without pdftoppm', (static function (): bool {
+    $sh = (string) file_get_contents(dirname(__DIR__) . '/install.sh');
+
+    return str_contains($sh, 'poppler-utils')
+        && preg_match('/have pdftoppm.*?\n\s*die /s', $sh) === 1;
+})());
+
+// An update that overwrote .env would replace APP_KEY, and every stored
+// credential would become an unreadable blob with no error at the time.
+check('nothing copies over .env or storage', (static function (): bool {
+    foreach (['install.sh', 'manage.sh'] as $name) {
+        $sh = (string) file_get_contents(dirname(__DIR__) . '/' . $name);
+
+        /*
+         * Only archives rooted at the whole application need the exclusions.
+         *
+         * The backup's file archive is rooted at `storage` and names the two
+         * subdirectories it wants, so there is no .env anywhere near it — and
+         * requiring the flag there reported a fault that did not exist. What
+         * matters is the tars that walk the application directory: `update` and
+         * `package`, either of which copying .env would replace APP_KEY and
+         * turn every stored credential into an unreadable blob, with no error
+         * at the moment it happened.
+         */
+        preg_match_all('/tar -c[zf][zf]? [^\n]*-C "\$(APP_DIR|source)"(.*?)\n\s*\n/s', $sh, $matches, PREG_SET_ORDER);
+
+        foreach ($matches as $match) {
+            foreach (['--exclude=./.env', '--exclude=./.git'] as $flag) {
+                if (!str_contains($match[2], $flag)) {
+                    echo '        ' . $name . ': a tar over $' . $match[1] . ' without ' . $flag . "\n";
+
+                    return false;
+                }
+            }
+        }
+    }
+
+    return true;
+})());
+
+check('the doctor covers what an install actually needs', (static function (): bool {
+    $rows   = App\Services\Doctor::run();
+    $groups = array_unique(array_column($rows, 'group'));
+
+    foreach (['PHP', 'Configuration', 'Storage', 'Database', 'Tools', 'Integrations'] as $wanted) {
+        if (!in_array($wanted, $groups, true)) {
+            return false;
+        }
+    }
+
+    // Every row has to say what to do about itself, or it is a diagnosis
+    // nobody can act on.
+    foreach ($rows as $row) {
+        if ($row['status'] !== App\Services\Doctor::OK && trim($row['hint']) === '' && $row['group'] !== 'Pipeline') {
+            echo '        no hint on: ' . $row['label'] . "\n";
+
+            return false;
+        }
+    }
+
+    return true;
+})());
+
 echo "\nSecrets, and what may reach a browser\n";
 
 /*

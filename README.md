@@ -101,7 +101,138 @@ installed — set `PDFTOPPM_PATH` in `.env` to its absolute path.
 
 ---
 
-## Installation
+## Installing
+
+```bash
+git clone https://github.com/maeterlinckle/invogrid.git
+cd invogrid
+sudo ./install.sh
+```
+
+It asks a dozen questions and does the rest: packages, database and grant,
+`.env` with a generated `APP_KEY`, file ownership, the Apache or nginx site,
+the firewall, the migrations, the first administrator, the Paperless webhook
+secret, and the cron entries. It is safe to run twice — an existing database is
+left alone and its credentials refreshed, and **an existing `APP_KEY` is never
+replaced**, because every stored credential is encrypted with it.
+
+```bash
+sudo ./install.sh --dry-run          # the plan, changing nothing (no root needed)
+sudo ./install.sh --help             # every option
+```
+
+Unattended, for a rebuild or a second site:
+
+```bash
+sudo ./install.sh --answers=/root/invogrid.answers --non-interactive --cron
+```
+
+The answers file holds a database password and an administrator password. Create
+it `chmod 600` and delete it afterwards — the installer says so at the end.
+
+### What it will not do
+
+Obtain a TLS certificate, or configure a reverse proxy. Both are site decisions
+with better tools than a shell script. Tell it which of the three situations it
+is in with `--tls=`:
+
+| `--tls=` | Means |
+|---|---|
+| `proxy` | Something in front terminates TLS. Sets `TRUST_PROXY=true`, so `X-Forwarded-Proto` is honoured. |
+| `direct-https` | This machine holds the certificate. Writes the vhost and the port-80 redirect. |
+| `plain-http` | No TLS at all. Sets `FORCE_HTTPS=false`, and says plainly that passwords cross the network in the clear. |
+
+---
+
+## Managing it
+
+`manage.sh` is the administration surface. The installer symlinks it, so after
+an install this works from anywhere:
+
+```bash
+sudo invogrid status
+sudo invogrid help
+```
+
+Anything that touches the database goes through `bin/console.php`, so it uses
+the application's own models — the same prepared statements, the same
+validation, the same guard rails. Changing a role with the database client would
+walk straight past the rule that stops you stranding the site with no
+administrator; going through the model means that rule holds on the command line
+exactly as it does on the web.
+
+### The ones worth knowing
+
+```bash
+sudo invogrid status            # services, versions, disk, the pipeline, cron
+sudo invogrid doctor            # every check, each with what to do about it
+sudo invogrid test              # the three verification harnesses
+sudo invogrid queue             # run one pass of the worker by hand, verbosely
+sudo invogrid refresh           # refresh the Clear Books cache now
+sudo invogrid backup            # database + PDFs + .env, rotated
+sudo invogrid update            # pull the latest version and migrate
+```
+
+`doctor` is the first thing to run on a server that is misbehaving. Every row
+that is not `ok` carries a line saying what to do, because a check that reports
+`FAIL: storage` and stops has told you nothing you did not already suspect. It
+exits non-zero only on a failure — an install that has not been pointed at Clear
+Books yet is incomplete, not broken, so that is a warning.
+
+### Updating
+
+```bash
+sudo invogrid backup
+sudo invogrid update
+```
+
+With no argument it clones the repository into a temp directory, copies the new
+version over the install, re-applies permissions, runs the migrations and
+reloads the web server. `.env`, `storage/` and the database are left alone.
+
+Give it a directory instead when the machine cannot reach GitHub — which is the
+normal case for a private repository on a server with no deploy key:
+
+```bash
+sudo invogrid update /path/to/new/version
+```
+
+### Backups
+
+`backup` writes three files and **all three are needed**:
+
+| | |
+|---|---|
+| `invogrid-*.sql.gz` | The database. |
+| `files-*.tar.gz` | The source PDFs and the uploaded logos. |
+| `env-*.bak` | `.env`, and therefore `APP_KEY`. |
+
+Without the matching `APP_KEY` a restored database has credentials nobody can
+read — every API token in it is an unreadable blob. Copy all three off the
+machine; the nightly cron entry keeps the last fourteen sets locally, which is
+protection against a mistake and not against the building burning down.
+
+`storage/pages` is deliberately **not** backed up. A page image is re-rendered
+from the PDF beside it in seconds, so including them would double the size of
+every backup to save a step that costs nothing.
+
+### The destructive ones
+
+`reset-database` and `reset-storage` ask twice and **ignore `--yes`**, because
+there is no undo and a scripted `--yes` is exactly how somebody empties the
+wrong database. `reset-database` also makes you type the database name.
+
+Neither can withdraw anything from Clear Books. What is submitted is submitted;
+what is lost is InvoGrid's record of it — including which Paperless documents
+have already been processed, so anything a workflow re-sends would be read and
+submitted a second time.
+
+---
+
+## Installing by hand
+
+What `install.sh` does, in case you would rather do it yourself — or need
+to know what it did.
 
 ```bash
 git clone https://github.com/maeterlinckle/invogrid.git
@@ -110,6 +241,7 @@ cp .env.example .env
 ```
 
 ### 1. Create the database
+
 
 ```bash
 sudo mariadb -e "CREATE DATABASE invogrid CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;"
@@ -177,7 +309,7 @@ php bin/console.php settings:list
 php tests/smoke.php
 ```
 
-`tests/smoke.php` runs 273 plain assertions: config loading, the `APP_KEY`
+`tests/smoke.php` runs 281 plain assertions: config loading, the `APP_KEY`
 encryption round trip, the validator, the pipeline state machine's internal
 consistency, company-name normalisation, the totals arithmetic, the amount-sign
 rules, provider selection, the template helpers and the route table. It also
@@ -1327,7 +1459,9 @@ menu changes is one nobody notices until a supplier queries an invoice.
 
 ## Deploying from scratch
 
-The whole list, in order. Nothing here is optional except where it says so.
+`sudo ./install.sh` does all of this. The list is here because somebody
+eventually has to know what the script was doing, and because a machine that
+was set up before the installer existed still has to be understood.
 
 **On the server**
 
@@ -1375,10 +1509,17 @@ The whole list, in order. Nothing here is optional except where it says so.
 
 **The two cron jobs**
 
-15. ```
+15. `sudo ./manage.sh cron-install` writes both, plus a nightly backup. By hand
+    it is:
+
+    ```
     * * * * * www-data /usr/bin/php /var/www/invogrid/bin/process-queue.php >/dev/null 2>&1
     17 * * * * www-data /usr/bin/php /var/www/invogrid/bin/refresh-clearbooks.php >/dev/null 2>&1
     ```
+
+    **Without the first one nothing is ever processed.** It is the single most
+    common way a working install stops working, so `doctor` reports a queue
+    with overdue jobs and `status` says when there are no cron entries at all.
 
 **Then check it**
 
