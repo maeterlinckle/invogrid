@@ -5,11 +5,11 @@ use App\Models\ClearbooksCache;
 /**
  * The Clear Books connection and the state of the cached lists.
  *
- * Deliberately narrow: this is not the Settings screen, which arrives with the
- * rest of the administration in a later stage. It covers the two things that
- * cannot wait — completing the consent flow, without which nothing downstream
- * has anything to match against, and being able to see whether the lists the
- * extraction prompts are built from are actually there.
+ * Deliberately narrow, and it stays narrow now the Settings screen exists: the
+ * credentials and addresses are edited there, and this covers the two things
+ * that are not settings at all — completing the consent flow, without which
+ * nothing downstream has anything to match against, and seeing whether the
+ * lists the extraction prompts are built from are actually there.
  *
  * @var bool                                                                        $configured
  * @var bool                                                                        $connected
@@ -60,9 +60,11 @@ foreach ($cache as $row) {
             connect. Those are issued by Clear Books on request, not generated here.
         </p>
         <p class="field-hint">
-            Until the Settings screen exists, they are set from the command line:
-            <code>php bin/console.php settings:set clearbooks_client_id</code>, then
-            <code>clearbooks_client_secret</code>, then <code>clearbooks_business_id</code>.
+            Enter them on
+            <a href="<?= e(url('/admin/settings#clearbooks')) ?>">Application settings</a> —
+            client id, client secret and business id. They can also be set from the command line
+            with <code>php bin/console.php settings:set clearbooks_client_id</code> and so on,
+            which is what an unattended install uses.
         </p>
     <?php elseif (!$connected): ?>
         <p>

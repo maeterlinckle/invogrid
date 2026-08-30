@@ -21,10 +21,10 @@ use Throwable;
 /**
  * The Clear Books connection: authorise it, see what is cached, refresh it now.
  *
- * The full Settings screen arrives in a later stage. This is the part of it that
- * cannot wait, because nothing downstream works until somebody has completed the
- * consent flow — the cache is empty, every extraction prompt is handed empty
- * lists, and every document lands in review saying so.
+ * The credentials and addresses live on the Settings screen. What is here is
+ * what is not a setting: the consent flow, which nothing downstream works
+ * without — until it is done the cache is empty, every extraction prompt is
+ * handed empty lists, and every document lands in review saying so.
  */
 final class ClearBooksController extends Controller
 {

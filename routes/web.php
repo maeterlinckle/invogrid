@@ -3,6 +3,7 @@
 declare(strict_types=1);
 
 use App\Controllers\AccountController;
+use App\Controllers\ActivityController;
 use App\Controllers\AuthController;
 use App\Controllers\BrandingController;
 use App\Controllers\ClearBooksController;
@@ -11,6 +12,7 @@ use App\Controllers\DocumentController;
 use App\Controllers\FieldController;
 use App\Controllers\PromptController;
 use App\Controllers\ReviewController;
+use App\Controllers\SettingsController;
 use App\Controllers\UserController;
 use App\Controllers\WebhookController;
 use App\Core\Router;
@@ -23,7 +25,8 @@ use App\Core\Router;
  * route without exception — except the webhook receiver, which is not a browser
  * form and is authenticated by a shared secret instead.
  *
- * Later stages add: /admin/settings and /admin/activity.
+ * Every destination in the navigation is now a real route; nothing is
+ * reserved for a later stage.
  */
 
 $router = new Router();
@@ -107,6 +110,37 @@ $router->group(['auth'], static function (Router $router): void {
     // it creates a *second* record in Clear Books — the first is not withdrawn,
     // because InvoGrid has no business deleting from somebody's ledger.
     $router->post('/documents/{id:\d+}/resubmit', [DocumentController::class, 'resubmit'], ['role:admin', 'csrf']);
+
+    /*
+     * The settings themselves.
+     *
+     * `/admin/settings/document-types` is declared **before** the section form,
+     * which is belt and braces: the section pattern is `[a-z_]+` and cannot
+     * match a hyphen, so the two could not collide, but the next section named
+     * with a hyphen would silently be swallowed by the generic route if this
+     * order were reversed.
+     *
+     * One POST per card rather than one for the page, so a rejected Clear Books
+     * address does not discard what was typed into the model boxes.
+     */
+    $router->get('/admin/settings', [SettingsController::class, 'index'], ['can:settings.manage'], 'settings');
+    $router->post('/admin/settings/document-types', [SettingsController::class, 'saveDocumentTypes'], ['can:settings.manage', 'csrf']);
+
+    // POST rather than GET, and not because anything is written: a model test
+    // is a paid API call, and a GET is something a browser may repeat on its
+    // own — a prefetch, a refresh, a link somebody bookmarked.
+    $router->post('/admin/settings/test/{target:[a-z_]+}', [SettingsController::class, 'test'], ['can:settings.manage', 'csrf']);
+
+    $router->post('/admin/settings/{section:[a-z_]+}', [SettingsController::class, 'save'], ['can:settings.manage', 'csrf']);
+
+    /*
+     * The activity log: what people did.
+     *
+     * `audit.view`, not `settings.manage` — they happen to be held by the same
+     * role today, and they are still different questions. Read-only, with no
+     * route that writes: a log a user interface can edit is not a log.
+     */
+    $router->get('/admin/activity', [ActivityController::class, 'index'], ['can:audit.view'], 'activity');
 
     /*
      * The Clear Books connection.

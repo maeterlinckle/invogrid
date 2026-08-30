@@ -100,6 +100,19 @@ final class DocumentType
     }
 
     /**
+     * Point a document type at a Paperless document type, or at nothing.
+     *
+     * Null is a legitimate answer, not a missing one: a site that does not use
+     * Paperless document types leaves every mapping empty, and the write-back
+     * simply does not touch the field. Set from the Settings screen; until
+     * that existed this column could only be changed in SQL.
+     */
+    public static function setPaperlessType(int $id, ?int $paperlessTypeId): void
+    {
+        Database::update('document_types', ['paperless_document_type_id' => $paperlessTypeId], $id);
+    }
+
+    /**
      * The sign applied to a line's unit price when it is submitted.
      *
      * `+1` for a bill (money spent) and for a **credit note** — Clear Books

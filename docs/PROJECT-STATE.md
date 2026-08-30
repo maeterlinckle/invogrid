@@ -3,7 +3,8 @@
 A factual snapshot of what exists in the codebase **right now**, not a changelog.
 Read it before starting work; rewrite the parts that changed when finishing.
 
-**Last updated:** install.sh and manage.sh (after Prompt 13).
+**Last updated:** the Application settings and Activity log screens — the last
+two `soon` entries in the navigation.
 
 ---
 
@@ -55,7 +56,9 @@ Read it before starting work; rewrite the parts that changed when finishing.
 | Security review, permission sweep, pipeline audit | done |
 | README complete enough to deploy from scratch | done |
 | `install.sh` and `manage.sh`, modelled on the sibling projects | done |
-| Application settings / full activity log screens | not started |
+| Application settings screen, with connection tests | done |
+| Paperless document type mapping, editable rather than SQL | done |
+| Full activity log: filters, paging, no route that writes | done |
 
 A document now runs the whole way on its own when everything resolves, and a
 person finishes the ones that do not. The pipeline itself still stops at
@@ -63,16 +66,15 @@ person finishes the ones that do not. The pipeline itself still stops at
 `submit` entry in `Pipeline::STAGES` and there should not be one: nothing should
 be able to put a bill into somebody's accounts because a cron job fired.
 
-Nav entries for the unbuilt destinations are rendered as muted text with a
-`soon` badge (`nav-link is-pending`) rather than as links. Documents, Review
-queue and Clear Books are real links now.
+**Every navigation entry is now a real destination.** The `soon` rendering
+(`nav-link is-pending`, muted text with a badge instead of a link) is kept in
+`templates/partials/nav.php` because the next unfinished screen will want it,
+but nothing currently uses it.
 
-**What is left**: the Settings screen (which would replace
-`bin/console.php settings:set`, and is where
-`document_types.paperless_document_type_id`, the processed-tag id and the two
-`stuck_*` thresholds would be edited — those are still set by hand in the
-database) and the full activity log view. The dashboard carries the last
-fifteen entries in the meantime.
+**What is left**: nothing from the original build plan. `bin/console.php
+settings:set` stays alongside the Settings screen rather than being replaced by
+it — a credential has to be settable before anybody can sign in to change one,
+and `install.sh` has no browser.
 
 ---
 
@@ -284,6 +286,11 @@ class may compare status strings it wrote out itself.
 | POST | `/admin/users/{id}` | `UserController::save` | `can:users.manage`, `csrf` |
 | POST | `/admin/users/{id}/password` | `UserController::password` | `can:users.manage`, `csrf` |
 | POST | `/admin/users/{id}/toggle` | `UserController::toggle` | `can:users.manage`, `csrf` |
+| GET | `/admin/settings` | `SettingsController::index` | `can:settings.manage` |
+| POST | `/admin/settings/document-types` | `SettingsController::saveDocumentTypes` | `can:settings.manage`, `csrf` |
+| POST | `/admin/settings/test/{target}` | `SettingsController::test` | `can:settings.manage`, `csrf` |
+| POST | `/admin/settings/{section}` | `SettingsController::save` | `can:settings.manage`, `csrf` |
+| GET | `/admin/activity` | `ActivityController::index` | `can:audit.view` |
 | GET | `/account/password` | `AccountController::password` | `auth` |
 | POST | `/account/password` | `AccountController::updatePassword` | `auth`, `csrf` |
 
@@ -320,11 +327,17 @@ browser form, so CSRF is meaningless on it; the shared secret in
 `paperless_webhook_secret` is what authenticates the caller. Do not put `csrf`
 on it — Paperless has no session to carry a token in.
 
-**Paths reserved for later stages** (rendered as `soon` in the nav):
-`/admin/settings`, `/admin/activity`. The review queue was
-reserved as `/queue` and is built as `/review`; Prompt 9 named the two admin
-screens `/settings/*` and they are built under `/admin/*`, which is the prefix
-the rest of the application already uses.
+**No path is reserved any more.** `/admin/settings` and `/admin/activity` were
+the last two and are built. The review queue was reserved as `/queue` and is
+built as `/review`; Prompt 9 named the two admin screens `/settings/*` and they
+are built under `/admin/*`, which is the prefix the rest of the application
+already uses.
+
+`/admin/settings/document-types` and `/admin/settings/test/{target}` are
+declared **before** `/admin/settings/{section}`. The section pattern is
+`[a-z_]+` and cannot match a hyphen or a second path segment, so today the
+order is redundant — it is there so that the next section named with a hyphen
+is not silently swallowed by the generic route.
 
 ### Middleware names
 
@@ -398,10 +411,11 @@ without a gate fails here rather than being found by whoever finds it.
 | `.sql` migration runner | `src/Core/Migrator.php` |
 | Template helpers (`e`, `url`, `can`, `format_money`, …) | `src/helpers.php` |
 | Settings read/write, secret handling, `.env` fallback | `src/Models/Setting.php` |
+| **What the Settings screen may edit, and how to render it** | `src/Models/SettingSchema.php` |
 | Users | `src/Models/User.php` |
 | Pipeline state machine, status counts | `src/Models/Document.php` |
 | Document type registry | `src/Models/DocumentType.php` |
-| Audit trail | `src/Models/AuditLog.php` |
+| Audit trail, and the log screen's filters and paging | `src/Models/AuditLog.php` |
 | Logo resolution and safe path handling | `src/Services/Branding.php` |
 | **cURL wrapper: timeouts, no redirects, error translation** | `src/Services/Http.php` |
 | One HTTP response, `json()`, `errorSummary()` | `src/Services/HttpResponse.php` |
@@ -455,6 +469,8 @@ without a gate fails here rather than being found by whoever finds it.
 | What counts as an acceptable password, in one place | `src/Core/PasswordPolicy.php` |
 | Custom fields: define, pair with Paperless, take out of use | `src/Controllers/FieldController.php` |
 | Prompts: edit, version, roll back, reset to default | `src/Controllers/PromptController.php` |
+| **Application settings, per-card saves, connection tests** | `src/Controllers/SettingsController.php` |
+| The activity log: filters and paging, and nothing that writes | `src/Controllers/ActivityController.php` |
 | Pick or create the Paperless field a value maps onto | `src/Services/PaperlessFields.php` |
 | **The only class that creates anything in Clear Books** | `src/Services/EntityCreator.php` |
 | **Build the payload, submit, attach, record** | `src/Services/SubmitStage.php` |
@@ -503,13 +519,13 @@ have bought nothing.
 [IG logo] InvoGrid   Documents  Review queue  Settings ▾   [theme] [avatar →] [Sign out]
                                                                    └ links to
                                                                      /account/password
-                                                          ├ Application settings (soon)
+                                                          ├ Application settings
                                                           ├ Branding
                                                           ├ Clear Books
                                                           ├ Prompts
                                                           ├ Custom fields
                                                           ├ Users
-                                                          └ Activity log (soon)
+                                                          └ Activity log
 ```
 
 No Dashboard entry: the logo is the link home. Items are filtered by capability;
@@ -553,6 +569,53 @@ The last five have **no `.env` fallback** and are rows only. `clearbooks_scopes`
 is asserted in `tests/smoke.php`: a scope added by accident fails a test rather
 than quietly granting the integration the run of the ledger.
 
+### What the Settings screen edits
+
+`App\Models\SettingSchema` is the authority, not this list — it declares every
+editable setting with its card, label, hint, field kind and validation rule, and
+`SettingsController` and `templates/admin/settings.php` both render from it.
+Adding a setting is an entry there plus a seeded row; `tests/smoke.php` fails if
+a key named in the schema is not seeded, because such a field renders, accepts
+what is typed and silently never comes back.
+
+Three groups are **deliberately absent** from the schema, and a smoke check
+asserts each stays absent:
+
+- `logo_*` — the Branding screen owns those. A storage path typed by hand is a
+  path to a file that is not there.
+- `clearbooks_access_token`, `clearbooks_refresh_token`,
+  `clearbooks_token_expires_at` — written by the consent flow. There is nothing
+  useful a person could type, and a value typed by hand breaks a working
+  connection.
+- `clearbooks_sync_correspondents`, `clearbooks_delete_correspondents` — already
+  switches on the Clear Books screen, beside the sync they govern.
+
+The form is filled from `Setting::stored()`, **not** `Setting::get()`. `get()`
+answers "what does the application use", which for an empty row is the `.env`
+value; putting that in the input would copy `.env` into the database the moment
+somebody saved an unrelated field, and the fallback would stop being a fallback
+without anyone deciding that. Where a row is empty and `.env` is answering, the
+screen says so under the field.
+
+A secret is never sent to the browser. It arrives at the template as
+`configured: true|false`; the box is always empty, an empty box means "leave it
+alone", and a separate checkbox clears one. `templates/admin/settings.php` may
+not reference `Setting::` at all, asserted with the comments stripped first so
+that deleting the paragraph explaining the rule cannot satisfy the check.
+
+`document_types.paperless_document_type_id` is edited on this screen, in its own
+card, against the list fetched live from Paperless. It stays a column rather than
+a settings row so that adding a document type is still one insert. When Paperless
+cannot be reached the card falls back to numeric inputs and says why — that is
+frequently exactly when somebody is correcting an id.
+
+**Connection tests** (`POST /admin/settings/test/{target}`) call the `ping()`
+that `PaperlessClient` and both LLM clients already carried for this screen.
+`isConfigured()` only answers "is there a string in the box", which is not the
+question anybody has. The model tests are real API calls, which is why they are
+buttons rather than something done on page load, and why they are POST — a GET
+is something a browser may repeat on its own.
+
 ---
 
 ## 11. Command-line tools
@@ -564,10 +627,12 @@ php bin/process-queue.php           work the queue; --status, --verbose, --limit
 php bin/refresh-clearbooks.php      refill the cache; --status, --sync, --dry-run
 php bin/console.php secret:generate      a random shared secret
 php bin/console.php settings:set <key>   set one, value read from stdin
+                                         (the Settings screen does the same job;
+                                          this is for an install with no browser)
 php bin/console.php key:generate    print a new APP_KEY
 php bin/console.php db:check        database reachable, schema current, key present
 php bin/console.php settings:list   which settings are configured (never values)
-php tests/smoke.php                 281 assertions; exits non-zero on failure
+php tests/smoke.php                 289 assertions; exits non-zero on failure
 php tests/pipeline.php              every workflow step: implemented, reachable, has run
 php tests/permissions.php <url>     every route x every role, over real HTTP
 php -S 127.0.0.1:8484 -t public bin/serve.php   development server
@@ -1657,6 +1722,34 @@ table — so the EXISTS stopped correlating and every document matched every
 search. The count said five, the list showed three, and neither looked wrong on
 its own. The method now throws without an alias, and `tests/smoke.php` asserts
 that the count and the list agree across eleven filter combinations.
+
+### The full activity log
+
+`/admin/activity`, `can:audit.view`. The dashboard's feed carries the last
+fifteen entries and answers "what has just happened"; this answers the other
+question — "who changed this, and when" — which needs filters and pages. Both
+exist on purpose. `AuditLog::recent()` serves the first, `paginate()` the
+second.
+
+Filters: action, person, a date range and free text over the details and the
+names. A bare number in the search is read as a **Paperless document id first**,
+because that is what somebody holding a piece of paper actually has, and then as
+text so a numeric reference is not lost. A closing date covers the whole day —
+`created_at <= '2026-03-03'` on its own excludes everything that happened after
+midnight on the date somebody just typed. `countMatching()` and `paginate()`
+share one `filterClause()`, and the smoke test asserts they agree across nine
+combinations for the same reason it does for `/documents`.
+
+The action and person lists are read **from the log**, not from a list in PHP:
+an action is whatever string a call site passed to `record()`, so a hard-coded
+list would go stale the first time somebody logged a new one and the filter
+would quietly stop offering it.
+
+**No route here writes.** There is no delete, no edit, no "clear the log": a log
+a user interface can alter is not a log. `document_events` — what the *machine*
+did — is deliberately not shown; it lives on each document's page, because an
+administrator asking who approved a bill does not want forty OCR retries in the
+answer.
 
 ### Retrying resumes; it always did
 

@@ -60,10 +60,19 @@ monogram. Any submitted document has a **printable summary** — what was read o
 the page and what Clear Books did with it, on one sheet, on its own layout
 rather than the ordinary page with its menus hidden.
 
-What is left is the Settings screen (which would replace
-`bin/console.php settings:set`) and the full activity log view. The navigation
-shows those two destinations marked *soon* rather than linking to pages that do
-not exist yet.
+**Settings → Application settings** is where the rest lives: the Paperless and
+Clear Books addresses and credentials, the API keys, which model runs each stage,
+how a page is rendered for the vision call, and the thresholds behind the
+dashboard's "not moving" list. A credential shows as *set* or *not set* and never
+as itself; an empty box means leave it alone, and there is a separate tick to
+clear one. Buttons beside the Paperless and model cards make the credential prove
+itself with a real call, rather than confirming only that a box is not empty. The
+same card is where each InvoGrid document type is pointed at a Paperless document
+type.
+
+**Settings → Activity log** is the full record of what people did — filterable by
+action, person, date and free text, and paged. Nothing on it writes. The
+dashboard keeps the last fifteen entries for the "what just happened" question.
 
 ---
 
@@ -413,11 +422,13 @@ the storage path. It also carries an optional fallback for each integration
 credential, for a site that would rather keep secrets out of the database
 entirely.
 
-**The `settings` table**, edited from Settings in the application, holds
+**The `settings` table**, edited on **Settings → Application settings**, holds
 everything an administrator changes day to day: the Paperless address and token,
 the Clear Books OAuth2 credentials and business id, the OpenAI and Anthropic API
 keys, the webhook shared secret, and which provider and model each pipeline stage
-uses.
+uses. `php bin/console.php settings:set <key>` does the same job from a terminal
+and is what an unattended install uses — a credential has to be settable before
+anybody can sign in to change one.
 
 Where both exist, **a non-empty setting wins** and the `.env` value is the
 fallback. Secrets are stored encrypted under `APP_KEY` and are never rendered
@@ -863,7 +874,8 @@ in once, and the application then keeps itself signed in on refresh tokens.
 1. Ask Clear Books for application credentials
    (<https://www.clearbooks.co.uk/support/api/>), giving them the redirect URI
    shown on **Settings → Clear Books**.
-2. Set the credentials:
+2. Enter the credentials on **Settings → Application settings → Clear Books**:
+   client id, client secret and business id. From a terminal instead:
 
    ```
    php bin/console.php settings:set clearbooks_client_id
@@ -1413,7 +1425,8 @@ machine tripped over, and — the one nothing else reports — what has **stoppe
 moving**. A document that has exhausted its retries is not marked *failed* and
 appears in no count; without that list it simply rots. Two thresholds, because
 a document waiting on a machine should move in minutes and one waiting on a
-person may sit over a weekend:
+person may sit over a weekend. Both are on **Settings → Application settings**,
+under *Noticing trouble*, or from a terminal:
 
 ```bash
 php bin/console.php settings:set stuck_pipeline_minutes 30
@@ -1500,8 +1513,10 @@ was set up before the installer existed still has to be understood.
     list is empty and every document lands in review saying so.
 13. **A model provider**: a key for whichever of Anthropic or OpenAI you have
     chosen, per stage.
-14. Pair the Paperless document types and the processed tag. These are still set
-    by hand:
+14. Pair the Paperless document types and the processed tag, on
+    **Settings → Application settings**. The document type mapping is the last
+    card on that page, against the list fetched from Paperless; the tag id is in
+    the Paperless card. From a terminal instead:
 
     ```bash
     php bin/console.php settings:set paperless_processed_tag_id 12

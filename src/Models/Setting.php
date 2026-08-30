@@ -107,6 +107,50 @@ final class Setting
         return $value === null ? $default : in_array($value, ['1', 'true', 'yes', 'on'], true);
     }
 
+    /**
+     * The value actually stored in the row, ignoring the .env fallback.
+     *
+     * The Settings screen needs this and `get()` will not do: `get()` answers
+     * "what does the application use", which for an empty row is the .env
+     * value. Putting that into the form's input would copy .env into the
+     * database the moment somebody pressed Save on an unrelated field, and the
+     * fallback would stop being a fallback without anyone deciding that.
+     *
+     * Never returns a secret. A screen has no business holding one, which is
+     * why the form treats an empty box as "leave this one alone".
+     */
+    public static function stored(string $key): ?string
+    {
+        self::load();
+
+        if (self::isSecret($key)) {
+            return null;
+        }
+
+        return self::$cache[$key]['value'] ?? null;
+    }
+
+    /** Is there an .env fallback for this key at all, filled in or not? */
+    public static function hasEnvFallback(string $key): bool
+    {
+        return array_key_exists($key, self::ENV_FALLBACK);
+    }
+
+    /**
+     * The .env fallback in force for a key, for the hint under an empty field.
+     *
+     * Null for a secret even when one is present: that a fallback exists is
+     * worth showing, what it is never is.
+     */
+    public static function envFallbackValue(string $key): ?string
+    {
+        if (self::isSecret($key)) {
+            return null;
+        }
+
+        return self::fallback($key);
+    }
+
     public static function isSecret(string $key): bool
     {
         self::load();

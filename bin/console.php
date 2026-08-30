@@ -90,7 +90,10 @@ switch ($command) {
         break;
 
     case 'settings:set':
-        // Until the Settings screen exists, this is how a credential gets in.
+        // The same job as the Settings screen, and kept alongside it rather
+        // than replaced by it: a credential has to be settable before anybody
+        // can sign in to change one, and install.sh has no browser.
+        //
         // The value is read from stdin rather than taken as an argument, so it
         // never reaches shell history or the process list.
         $key = $argv[2] ?? '';

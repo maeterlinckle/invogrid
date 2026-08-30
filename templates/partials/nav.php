@@ -7,11 +7,12 @@
  * on a desktop the same element is styled as a drop-down. There is no second
  * structure to keep in step, and it works with JavaScript switched off.
  *
- * The destinations that later stages build are listed now and marked
- * `'pending' => true`, which renders them as muted text rather than as links.
- * Showing the shape of the application without offering a link to a page that
- * does not exist is better than either hiding the structure or handing somebody
- * a 404.
+ * Every entry is a real destination now. The `'pending' => true` rendering is
+ * kept — it draws an entry as muted text with a `soon` badge instead of a link,
+ * which is how Application settings and the Activity log were shown while they
+ * were being built. Showing the shape of the application without offering a
+ * link to a page that does not exist beats hiding the structure or handing
+ * somebody a 404, and the next unfinished screen will want it again.
  */
 $user = auth_user();
 
@@ -23,13 +24,13 @@ $links = [
 
     // Everything occasional: set up once, visited rarely.
     ['label' => 'Settings', 'href' => '/admin/settings', 'capability' => null, 'children' => [
-        ['label' => 'Application settings', 'href' => '/admin/settings', 'capability' => 'settings.manage', 'pending' => true],
+        ['label' => 'Application settings', 'href' => '/admin/settings', 'capability' => 'settings.manage'],
         ['label' => 'Branding',             'href' => '/admin/branding', 'capability' => 'settings.manage'],
         ['label' => 'Clear Books',          'href' => '/admin/clearbooks', 'capability' => 'settings.manage'],
         ['label' => 'Prompts',              'href' => '/admin/prompts',  'capability' => 'prompts.manage'],
         ['label' => 'Custom fields',        'href' => '/admin/fields',   'capability' => 'fields.manage'],
         ['label' => 'Users',                'href' => '/admin/users',    'capability' => 'users.manage'],
-        ['label' => 'Activity log',         'href' => '/admin/activity', 'capability' => 'audit.view',      'pending' => true],
+        ['label' => 'Activity log',         'href' => '/admin/activity', 'capability' => 'audit.view'],
     ]],
 ];
 

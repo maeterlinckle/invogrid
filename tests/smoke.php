@@ -44,6 +44,7 @@ use App\Core\LoginThrottle;
 use App\Core\Migrator;
 use App\Core\Router;
 use App\Core\Validator;
+use App\Models\AuditLog;
 use App\Models\Document;
 use App\Models\CustomField;
 use App\Models\ClearbooksCache;
@@ -54,6 +55,7 @@ use App\Models\Submission;
 use App\Models\OcrResult;
 use App\Models\PromptTemplate;
 use App\Models\Setting;
+use App\Models\SettingSchema;
 use App\Models\User;
 use App\Services\Llm\LlmException;
 use App\Services\Llm\LlmFactory;
@@ -1200,6 +1202,117 @@ check('no template reads a secret setting', (static function (): bool {
     }
 
     return $offenders === [];
+})());
+
+/*
+ * The Settings screen is the one page whose whole job is handling credentials,
+ * so the rule above is tightened for it: it may not touch the model at all.
+ * Everything it renders is prepared by the controller, where `secret` is turned
+ * into a boolean before it ever reaches a template.
+ */
+check('the settings screen never reads a setting itself', (static function (): bool {
+    $body = (string) file_get_contents(dirname(__DIR__) . '/templates/admin/settings.php');
+
+    // Comments are stripped first, because the file's own docblock explains
+    // this rule and names `Setting::secret()` doing it. A check that cannot
+    // tell an explanation from a call would be satisfied by deleting the
+    // paragraph that says why the rule exists.
+    $code = '';
+    foreach (token_get_all($body) as $token) {
+        if (is_array($token) && in_array($token[0], [T_COMMENT, T_DOC_COMMENT], true)) {
+            continue;
+        }
+
+        $code .= is_array($token) ? $token[1] : $token;
+    }
+
+    return !str_contains($code, 'Setting::');
+})());
+
+check('the settings and activity screens exist',
+    is_file(dirname(__DIR__) . '/templates/admin/settings.php')
+        && is_file(dirname(__DIR__) . '/templates/admin/activity.php'));
+
+/*
+ * A key named in the schema but absent from the seed is a field that renders,
+ * accepts what is typed and silently never comes back — the worst kind of bug
+ * on a settings screen, because it looks exactly like success.
+ */
+check('every editable setting is a seeded row', (static function (): bool {
+    $seeded = [];
+
+    foreach (glob(dirname(__DIR__) . '/database/migrations/*.sql') ?: [] as $file) {
+        if (preg_match_all('/^\s*\(\'([a-z0-9_]+)\'\s*,/mi', (string) file_get_contents($file), $m) > 0) {
+            $seeded = array_merge($seeded, $m[1]);
+        }
+    }
+
+    $missing = array_diff(SettingSchema::keys(), $seeded);
+
+    if ($missing !== []) {
+        echo '        not seeded: ' . implode(', ', $missing) . "\n";
+    }
+
+    return $missing === [];
+})());
+
+/*
+ * The deliberate omissions, asserted rather than left to a comment.
+ *
+ * The three OAuth tokens are written by the consent flow and the logo paths by
+ * an upload; offering any of them as a text box is how somebody breaks a
+ * working connection, or points the header at a file that is not there.
+ */
+check('the settings screen does not offer the machine-written rows', (static function (): bool {
+    $forbidden = [
+        'clearbooks_access_token', 'clearbooks_refresh_token', 'clearbooks_token_expires_at',
+        'logo_light_path', 'logo_light_mime', 'logo_dark_path', 'logo_dark_mime',
+    ];
+
+    $offered = array_intersect($forbidden, SettingSchema::keys());
+
+    if ($offered !== []) {
+        echo '        editable when it should not be: ' . implode(', ', $offered) . "\n";
+    }
+
+    return $offered === [];
+})());
+
+check('every editable setting belongs to a card that exists', (static function (): bool {
+    foreach (SettingSchema::fields() as $key => $field) {
+        if (!SettingSchema::isSection((string) $field['section'])) {
+            echo '        ' . $key . ' names section ' . $field['section'] . "\n";
+
+            return false;
+        }
+    }
+
+    // And the other way round: an empty card renders as a heading with a Save
+    // button under it and nothing in between.
+    foreach (array_keys(SettingSchema::SECTIONS) as $section) {
+        if (SettingSchema::forSection((string) $section) === []) {
+            echo '        section ' . $section . ' has no fields' . "\n";
+
+            return false;
+        }
+    }
+
+    return true;
+})());
+
+/*
+ * A section name reaches the router as a URL segment. `[a-z_]+` is what the
+ * route pattern matches, and a section named outside it would 404 on save
+ * while rendering perfectly.
+ */
+check('every settings section is a legal URL segment', (static function (): bool {
+    foreach (array_keys(SettingSchema::SECTIONS) as $section) {
+        if (preg_match('/^[a-z_]+$/', (string) $section) !== 1) {
+            return false;
+        }
+    }
+
+    return true;
 })());
 
 check('every JSON response is a fixed literal, never a settings dump', (static function (): bool {
@@ -2431,6 +2544,45 @@ ACME
         }
 
         return true;
+    })());
+
+    /*
+     * The same question of the activity log, and it is worth asking twice: the
+     * count and the list are separate SQL statements sharing a WHERE builder,
+     * and a filter that reaches only one of them shows "12 entries" above a
+     * table of three. Neither number is obviously the wrong one.
+     */
+    check('every activity filter agrees between the count and the list', (static function (): bool {
+        $cases = [
+            [],
+            ['action' => 'auth.login'],
+            ['action' => 'nothing.at.all'],
+            ['q' => 'signed'],
+            ['q' => '102'],
+            ['q' => 'nothing-matches-this-at-all'],
+            ['from' => '2020-01-01'],
+            ['to' => '2020-01-01'],
+            ['from' => '2020-01-01', 'to' => '2099-01-01', 'q' => 'a'],
+        ];
+
+        foreach ($cases as $filters) {
+            if (AuditLog::countMatching($filters) !== count(AuditLog::paginate($filters, 200))) {
+                echo '        disagreed on: ' . json_encode($filters) . "\n";
+
+                return false;
+            }
+        }
+
+        return true;
+    })());
+
+    // A closing date is a whole day, not midnight on it. Filtering "to today"
+    // and getting nothing that happened today is the bug this rules out.
+    check('an activity date range includes both end days', (static function (): bool {
+        $today = date('Y-m-d');
+
+        return AuditLog::countMatching(['from' => $today, 'to' => $today])
+            === count(AuditLog::paginate(['from' => $today, 'to' => $today], 200));
     })());
 
     // Without an alias the correlation is silently wrong rather than loud, so
