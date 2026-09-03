@@ -20,8 +20,6 @@ use App\Models\SettingSchema;
  * @var bool                              $keyUsable       APP_KEY can encrypt
  * @var bool                              $connected       Clear Books is authorised
  * @var array<int,array<string,mixed>>    $docTypes
- * @var array<int,array<string,mixed>>    $paperlessTypes
- * @var string|null                       $paperlessError
  */
 
 $old    = $old ?? [];
@@ -88,8 +86,8 @@ $value = static function (string $section, string $key, string $stored) use ($ol
         </li>
         <li>
             <a href="<?= e(url('/admin/clearbooks')) ?>">Clear Books</a> — authorising the
-            connection, the cached lists, and whether suppliers are mirrored into Paperless. The
-            credentials it needs first are below.
+            connection, the cached lists, and the local copy of what Clear Books already
+            holds. The credentials it needs first are below.
         </li>
         <li>
             <a href="<?= e(url('/admin/prompts')) ?>">Prompts</a> and
@@ -232,7 +230,6 @@ $value = static function (string $section, string $key, string $stored) use ($ol
      * itself. Save first: a test checks what is stored, not what is typed.
      */
     $tests = match ($name) {
-        'paperless' => ['paperless' => 'Test the Paperless connection'],
         'llm'       => [
             'llm_ocr'        => 'Test the page-reading model',
             'llm_extraction' => 'Test the extraction model',
@@ -258,46 +255,39 @@ $value = static function (string $section, string $key, string $stored) use ($ol
     <?php endif; ?>
 <?php endforeach; ?>
 
-<form method="post" action="<?= e(url('/admin/settings/document-types')) ?>" class="form card" id="document-types">
-    <?= csrf_field() ?>
+<?php /*
+   Read-only, and nothing here to save.
 
-    <h2>Paperless document types</h2>
+   This card used to carry the one editable thing about a document type — which
+   Paperless document type it was written back as — and that has gone with
+   Paperless. What is left is worth keeping on screen anyway: it is the only
+   place that answers "what does InvoGrid do with a credit note", and the answer
+   is a row in `document_types` rather than anything in the code. An
+   administrator wondering why a refund went somewhere unexpected reads it here.
+
+   Changing a type is still a migration. That is deliberate — `clearbooks_resource`
+   decides which endpoint somebody's accounts are written to, and a text box on a
+   settings page is the wrong amount of ceremony for that. */ ?>
+<div class="card" id="document-types">
+    <h2>Document types</h2>
     <p class="muted">
-        Which Paperless document type each InvoGrid type is written back as after it reaches Clear
-        Books. Leaving one unmapped is a legitimate choice: the write-back then leaves the Paperless
-        document type alone.
+        What InvoGrid can classify a document as, and where each one is submitted in Clear Books.
+        Set up by migration rather than on this screen: which endpoint a document reaches is not a
+        preference.
     </p>
-
-    <?php if ($paperlessError !== null): ?>
-        <p class="field-hint">
-            <?= e($paperlessError) ?> The ids can still be typed in — that is often exactly what
-            somebody is doing when Paperless is not answering.
-        </p>
-    <?php endif; ?>
-
-    <?php if (isset($errors['paperless_document_type_id'])): ?>
-        <p class="field-error"><?= e((string) $errors['paperless_document_type_id']) ?></p>
-    <?php endif; ?>
 
     <div class="table-wrap">
         <table class="table">
-            <caption class="sr-only">InvoGrid document types and the Paperless type each maps onto</caption>
+            <caption class="sr-only">InvoGrid document types and the Clear Books resource each is submitted to</caption>
             <thead>
                 <tr>
-                    <th scope="col">InvoGrid type</th>
+                    <th scope="col">Type</th>
                     <th scope="col">Clear Books resource</th>
-                    <th scope="col">Paperless document type</th>
                 </tr>
             </thead>
             <tbody>
                 <?php foreach ($docTypes as $type): ?>
-                    <?php
-                    $id      = (int) $type['id'];
-                    $mapped  = $type['paperless_document_type_id'] === null
-                        ? ''
-                        : (string) (int) $type['paperless_document_type_id'];
-                    $inactive = (int) $type['active'] !== 1;
-                    ?>
+                    <?php $inactive = (int) $type['active'] !== 1; ?>
                     <tr class="<?= $inactive ? 'row-muted' : '' ?>">
                         <th scope="row">
                             <?= e((string) $type['label']) ?>
@@ -307,31 +297,9 @@ $value = static function (string $section, string $key, string $stored) use ($ol
                             <span class="cell-sub mono"><?= e((string) $type['type_key']) ?></span>
                         </th>
                         <td class="mono break"><?= e((string) $type['clearbooks_resource']) ?></td>
-                        <td>
-                            <?php if ($paperlessTypes === []): ?>
-                                <input class="input" type="number" min="1"
-                                       name="paperless_document_type_id[<?= $id ?>]"
-                                       value="<?= e($mapped) ?>" placeholder="Paperless id">
-                            <?php else: ?>
-                                <select class="input" name="paperless_document_type_id[<?= $id ?>]"
-                                        aria-label="Paperless document type for <?= e((string) $type['label']) ?>">
-                                    <option value="">Not written back</option>
-                                    <?php foreach ($paperlessTypes as $available): ?>
-                                        <?php $availableId = (string) (int) ($available['id'] ?? 0); ?>
-                                        <option value="<?= e($availableId) ?>" <?= $mapped === $availableId ? 'selected' : '' ?>>
-                                            <?= e((string) ($available['name'] ?? ('id ' . $availableId))) ?>
-                                        </option>
-                                    <?php endforeach; ?>
-                                </select>
-                            <?php endif; ?>
-                        </td>
                     </tr>
                 <?php endforeach; ?>
             </tbody>
         </table>
     </div>
-
-    <div class="form-actions">
-        <button type="submit" class="btn btn-primary">Save the mapping</button>
-    </div>
-</form>
+</div>

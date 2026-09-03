@@ -2,9 +2,17 @@
 /**
  * Main application layout.
  *
+ * `$wide` widens the content column for the document-facing screens. They are
+ * worked on a monitor, they put a scan beside a form or a six-column table on
+ * the page, and 1200px squeezes both for the sake of a measure that only suits
+ * running prose. The forms keep their own `max-width`, so a settings page set
+ * wide would still not stretch — which is why this is opt-in per screen rather
+ * than a change to `.container` itself.
+ *
  * @var string $content
  * @var string $pageTitle
  * @var string $appName
+ * @var bool   $wide
  */
 $pageTitle = $pageTitle ?? '';
 ?>
@@ -48,7 +56,7 @@ $pageTitle = $pageTitle ?? '';
 
 <?= partial('partials/nav') ?>
 
-<main id="main" class="container">
+<main id="main" class="container<?= empty($wide) ? '' : ' container-wide' ?>">
     <?= partial('partials/flash') ?>
     <?= $content ?>
 </main>

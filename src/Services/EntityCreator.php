@@ -29,18 +29,17 @@ use RuntimeException;
  * machine should do — but what gets created is what the person approved after
  * looking at it.
  *
- * Creating a supplier does three things, in this order, because a failure part
- * way through must leave the earlier ones true rather than the later ones
+ * Creating a supplier does two things, in this order, because a failure part
+ * way through must leave the earlier one true rather than the later one
  * orphaned:
  *
  *  1. creates it in Clear Books — the record of account, and the only step that
  *     cannot be undone from here;
- *  2. caches it, so the matching pass can see it immediately;
- *  3. gives it a Paperless correspondent, the same way the nightly sync would.
+ *  2. caches it, so the matching pass can see it immediately.
  *
- * Step 3 failing is not fatal: the supplier exists, the document can be
- * submitted, and the sync will link it up. Throwing there would discard a
- * successful creation over a filing detail.
+ * There used to be a third — mirroring the supplier into Paperless as a
+ * correspondent — and its removal is why the return value no longer carries a
+ * correspondent id.
  */
 final class EntityCreator
 {
@@ -48,7 +47,7 @@ final class EntityCreator
      * Create a supplier and resolve the document's supplier match to it.
      *
      * @param array<string,mixed> $fields As confirmed on the form
-     * @return array{cbId:string,name:string,correspondentId:?int,status:string}
+     * @return array{cbId:string,name:string,status:string}
      */
     public static function supplier(int $documentId, int $entityMatchId, array $fields): array
     {
@@ -100,11 +99,9 @@ final class EntityCreator
         ClearbooksCache::upsert(ClearbooksCache::SUPPLIER, $cbId, $name, $created + $payload);
         $cached = ClearbooksCache::find(ClearbooksCache::SUPPLIER, $cbId);
 
-        $correspondentId = $cached === null ? null : SupplierSync::ensureCorrespondent($cached);
-
         // Point the extraction at it, so the re-check derives the match from
         // the record rather than from this method having said so.
-        self::pointExtractionAtSupplier($documentId, $cbId, $name, $correspondentId);
+        self::pointExtractionAtSupplier($documentId, $cbId, $name);
 
         $status = MatchStage::recheck($documentId);
 
@@ -118,10 +115,9 @@ final class EntityCreator
         }
 
         return [
-            'cbId'            => $cbId,
-            'name'            => $name,
-            'correspondentId' => $correspondentId,
-            'status'          => $status,
+            'cbId'   => $cbId,
+            'name'   => $name,
+            'status' => $status,
         ];
     }
 
@@ -152,14 +148,7 @@ final class EntityCreator
 
         switch ($type) {
             case EntityMatch::SUPPLIER:
-                self::pointExtractionAtSupplier(
-                    $documentId,
-                    $remoteId,
-                    $name,
-                    $cached['paperless_correspondent_id'] === null
-                        ? null
-                        : (int) $cached['paperless_correspondent_id']
-                );
+                self::pointExtractionAtSupplier($documentId, $remoteId, $name);
                 break;
 
             case EntityMatch::VAT_TREATMENT:
@@ -210,14 +199,19 @@ final class EntityCreator
      * would be undone by the next re-check, which is exactly the bug that makes
      * a review screen feel haunted.
      */
-    private static function pointExtractionAtSupplier(int $documentId, string $cbId, string $name, ?int $correspondentId): void
+    private static function pointExtractionAtSupplier(int $documentId, string $cbId, string $name): void
     {
         $extraction = self::extraction($documentId);
         $supplier   = Extraction::decode($extraction, 'supplier_match');
 
         $supplier['supplierMatched'] = true;
         $supplier['cbId']            = $cbId;
-        $supplier['paperlessId']     = $correspondentId;
+
+        // Any `paperlessId` left on an extraction from before the pivot is
+        // dropped rather than carried forward. It points at a record in a
+        // system this application no longer talks to, and a stale id that
+        // still looks live is worse than no id at all.
+        unset($supplier['paperlessId']);
 
         // What the model read off the letterhead is kept: it is the evidence
         // for the decision, and a later reader asking "why was this matched to

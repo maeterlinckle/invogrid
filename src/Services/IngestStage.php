@@ -10,12 +10,29 @@ use App\Models\Document;
 use RuntimeException;
 
 /**
- * The first stage: fetch everything Paperless knows about the document, and the
- * source PDF itself.
+ * The first stage: check that what was ingested is actually processable.
  *
- * The webhook gives us an id and nothing else — deliberately, because a webhook
- * body is whatever the workflow was configured to send and cannot be trusted to
- * be complete or current. Everything real is read back from the API.
+ * The route that accepted the document — {@see \App\Services\Ingest\Ingestor} —
+ * has already stored the PDF and created the row, so this stage does not fetch
+ * anything. It exists for two reasons that outlived the Paperless download it
+ * replaced.
+ *
+ * **It is the gate in front of the expensive part.** OCR renders every page and
+ * sends each one to a vision model. A PDF that is missing, truncated, encrypted
+ * or not really a PDF should be found here, once, for the cost of a stat and a
+ * `pdfinfo` call — not discovered by a model that has already been paid for
+ * three pages of nothing.
+ *
+ * **It gives every route the same first step.** A watched directory can copy a
+ * file that another process is still writing; `Ingestor` reads a plausible size
+ * and a `%PDF-` header from a file that is nonetheless half a document. This
+ * stage runs a moment later, from the queue, and is where that shows up — as a
+ * retryable failure on a document a person can see, which is exactly what the
+ * retry machinery is for.
+ *
+ * Keeping `received -> ocr_pending` as a queued stage rather than folding it
+ * into the ingest routes also means the queue processor remains the only thing
+ * that advances a document, however it arrived.
  */
 final class IngestStage
 {
@@ -25,48 +42,65 @@ final class IngestStage
      */
     public function run(array $document): string
     {
-        $id         = (int) $document['id'];
-        $paperlessId = (int) $document['paperless_doc_id'];
+        $id       = (int) $document['id'];
+        $relative = (string) ($document['pdf_path'] ?? '');
 
-        $client = new PaperlessClient();
-
-        // Metadata first. If the document has been deleted in Paperless this
-        // throws PaperlessNotFoundException, which the runner treats as
-        // permanent — there is no point retrying for something that is gone.
-        $meta = $client->document($paperlessId);
-
-        $path = self::storagePath($id);
-
-        // A retry re-downloads rather than trusting whatever is on disk: the
-        // usual reason for a retry is that the last attempt left something
-        // half-written.
-        if (is_file($path)) {
-            @unlink($path);
+        if ($relative === '') {
+            throw new RuntimeException(
+                'No PDF was stored for this document, so there is nothing to read.'
+            );
         }
 
-        $bytes = $client->downloadOriginal($paperlessId, $path);
+        $path = self::absolutePath($relative);
+
+        if ($path === null) {
+            throw new RuntimeException(
+                'The stored PDF is missing from disk. It may have been removed, or the '
+                . 'storage directory may not be the one it was written to.'
+            );
+        }
+
+        $bytes = filesize($path);
+
+        if ($bytes === false || $bytes < 1) {
+            throw new RuntimeException('The stored PDF is empty.');
+        }
+
+        self::assertPdf($path);
+
+        $renderer = new PdfRenderer();
+
+        /*
+         * `pageCount()` returns null when poppler is not installed, which is a
+         * deployment problem the OCR stage reports far better than this one
+         * can — it is the stage that actually needs the renderer. A null here
+         * means "could not check", not "no pages", so it must not fail.
+         *
+         * A zero, on the other hand, is `pdfinfo` reading the file and finding
+         * nothing in it: a real answer, and a bad one.
+         */
+        $pages = $renderer->pageCount($path);
+
+        if ($pages !== null && $pages < 1) {
+            throw new RuntimeException('The PDF has no pages in it.');
+        }
 
         Database::update('documents', [
-            // Relative to the storage path, so moving the storage directory or
-            // restoring onto a different machine does not invalidate every row.
-            'pdf_path' => self::relativePath($id),
+            'page_count' => $pages,
 
-            // The correspondent Paperless already believes in, if any. Only a
-            // starting point: the extraction stage reads the issuer off the page
-            // and the two are reconciled later.
-            'correspondent_raw' => self::correspondentName($meta, $client),
-
-            // Cleared because this attempt worked.
+            // Cleared because this attempt worked. A document that failed here
+            // and was fixed should not keep wearing the old error.
             'failed_stage'  => null,
             'error_message' => null,
         ], $id);
 
         error_log(sprintf(
-            '[ingest] document %d (paperless %d): %s, %d bytes',
+            '[ingest] document %d (%s): %s, %d bytes, %s',
             $id,
-            $paperlessId,
-            (string) ($meta['title'] ?? 'untitled'),
-            $bytes
+            (string) ($document['ingest_source'] ?? 'unknown'),
+            (string) ($document['original_filename'] ?? 'unnamed'),
+            $bytes,
+            $pages === null ? 'page count unknown' : $pages . ' page(s)'
         ));
 
         return Document::OCR_PENDING;
@@ -122,38 +156,31 @@ final class IngestStage
     }
 
     /**
-     * The correspondent's name, given a document whose `correspondent` is an id.
+     * That the file on disk is a PDF, checked again here rather than trusted
+     * from ingest.
      *
-     * Paperless returns the id, not the name, unless asked otherwise. One extra
-     * call per document is cheap and saves the review screen showing "17".
-     *
-     * @param array<string,mixed> $meta
+     * The two checks are not the same check twice. `Ingestor` reads the header
+     * of a file it is about to accept, to reject an obvious mistake before
+     * creating anything. This reads the header of the file that was actually
+     * stored — after a move that could have been interrupted, from a directory
+     * a backup or a sync client may have touched since.
      */
-    private static function correspondentName(array $meta, PaperlessClient $client): ?string
+    private static function assertPdf(string $path): void
     {
-        $correspondent = $meta['correspondent'] ?? null;
+        $handle = @fopen($path, 'rb');
 
-        if (!is_int($correspondent) && !ctype_digit((string) $correspondent)) {
-            return null;
+        if ($handle === false) {
+            throw new RuntimeException('The stored PDF could not be opened for reading.');
         }
 
-        static $names = null;
+        $magic = (string) fread($handle, 5);
+        fclose($handle);
 
-        if ($names === null) {
-            $names = [];
-
-            try {
-                foreach ($client->correspondents() as $row) {
-                    $names[(int) $row['id']] = (string) $row['name'];
-                }
-            } catch (RuntimeException) {
-                // Not worth failing the whole ingest over: the name is a
-                // convenience, and the extraction stage reads the issuer off
-                // the page anyway.
-                return null;
-            }
+        if ($magic !== '%PDF-') {
+            throw new RuntimeException(
+                'The stored file is not a PDF. It may have been replaced, or the transfer '
+                . 'that wrote it may not have finished.'
+            );
         }
-
-        return $names[(int) $correspondent] ?? null;
     }
 }

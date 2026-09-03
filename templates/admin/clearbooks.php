@@ -1,6 +1,8 @@
 <?php
 
 use App\Models\ClearbooksCache;
+use App\Models\ClearbooksInvoice;
+use App\Services\InvoiceSync;
 
 /**
  * The Clear Books connection and the state of the cached lists.
@@ -21,8 +23,11 @@ use App\Models\ClearbooksCache;
  * @var array<string,array{count:int,cachedAt:?string}>                             $cache
  * @var array<int,array<string,mixed>>                                              $suppliers
  * @var array<int,array<string,mixed>>                                              $creditTypes
- * @var bool                                                                        $syncOn
- * @var bool                                                                        $deleteOn
+ * @var array{bill:int,creditNote:int,total:int,syncedAt:?string}                   $invoices
+ * @var array<int,array<string,mixed>>                                              $recentInvoices
+ * @var int                                                                         $syncInterval
+ * @var array<string,mixed>|null                                                    $syncLastRun
+ * @var int|null                                                                    $syncDueAt
  */
 
 $labels = [
@@ -206,6 +211,195 @@ foreach ($cache as $row) {
         </form>
     </div>
 
+    <h2 class="section-title">Purchase documents already in Clear Books</h2>
+
+    <div class="card">
+        <p>
+            A local copy of every bill and credit note Clear Books holds, kept so that InvoGrid can
+            tell whether a document that has just been ingested has already been posted. Clear Books
+            has no search endpoint and starts throttling above five requests a second, so the
+            question is answered from here rather than asked of them per document.
+        </p>
+        <p class="muted">
+            Clear Books is the source of truth: a document deleted there disappears from here on
+            the next run. Nothing is ever written back — this only reads.
+        </p>
+
+        <ul class="meta-list">
+            <li>
+                <strong>Bills</strong>
+                <span class="mono"><?= e(number_format($invoices['bill'])) ?></span>
+            </li>
+            <li>
+                <strong>Credit notes</strong>
+                <span class="mono"><?= e(number_format($invoices['creditNote'])) ?></span>
+            </li>
+            <li>
+                <strong>Last confirmed</strong>
+                <span class="mono">
+                    <?= $invoices['syncedAt'] === null ? 'never' : e(format_datetime($invoices['syncedAt'])) ?>
+                </span>
+            </li>
+        </ul>
+    </div>
+
+    <div class="card <?= $syncLastRun === null ? '' : (($syncLastRun['ok'] ?? false) ? 'card-ok' : 'card-warn') ?>">
+        <h3>Last sync</h3>
+
+        <?php if ($syncLastRun === null): ?>
+            <p>
+                <span class="badge badge-muted">Never run</span>
+            </p>
+            <p class="muted">
+                Nothing has been fetched yet. Press <strong>Sync now</strong>, or wait for the
+                scheduled run.
+            </p>
+        <?php else: ?>
+            <p>
+                <span class="badge <?= ($syncLastRun['ok'] ?? false) ? 'badge-ok' : 'badge-danger' ?>">
+                    <?= ($syncLastRun['ok'] ?? false) ? 'Succeeded' : 'Failed' ?>
+                </span>
+                <?= e(format_datetime((string) ($syncLastRun['at'] ?? ''))) ?>
+                <span class="muted">
+                    — <?= (string) ($syncLastRun['trigger'] ?? '') === 'cron' ? 'scheduled' : 'run by hand' ?>,
+                    <?= e(number_format((float) ($syncLastRun['seconds'] ?? 0), 1)) ?>s
+                </span>
+            </p>
+
+            <p><?= e((string) ($syncLastRun['message'] ?? '')) ?></p>
+
+            <?php // Empty when a run failed before either endpoint answered, in
+                  // which case a table of zeroes says less than the message does.
+            ?>
+            <?php if (is_array($syncLastRun['types'] ?? null) && $syncLastRun['types'] !== []): ?>
+                <div class="table-wrap">
+                    <table class="table table-compact">
+                        <caption class="sr-only">What the last sync fetched</caption>
+                        <thead>
+                            <tr>
+                                <th scope="col">Kind</th>
+                                <th scope="col" class="amount">Fetched</th>
+                                <th scope="col" class="amount">New</th>
+                                <th scope="col" class="amount">Changed</th>
+                                <th scope="col" class="amount">Unchanged</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            <?php foreach ($syncLastRun['types'] as $type => $counts): ?>
+                                <tr>
+                                    <th scope="row"><?= e(ucfirst(ClearbooksInvoice::label((string) $type, true))) ?></th>
+                                    <td class="amount"><?= e(number_format((int) ($counts['fetched'] ?? 0))) ?></td>
+                                    <td class="amount"><?= e(number_format((int) ($counts['created'] ?? 0))) ?></td>
+                                    <td class="amount"><?= e(number_format((int) ($counts['updated'] ?? 0))) ?></td>
+                                    <td class="amount"><?= e(number_format((int) ($counts['unchanged'] ?? 0))) ?></td>
+                                </tr>
+                            <?php endforeach; ?>
+                            <tr>
+                                <th scope="row">Deleted here, gone from Clear Books</th>
+                                <td class="amount" colspan="4">
+                                    <?= e(number_format((int) ($syncLastRun['deleted'] ?? 0))) ?>
+                                </td>
+                            </tr>
+                        </tbody>
+                    </table>
+                </div>
+            <?php endif; ?>
+
+            <?php if ((int) ($syncLastRun['derived'] ?? 0) > 0): ?>
+                <p class="field-hint">
+                    Clear Books returned no total of its own for
+                    <?= e(number_format((int) $syncLastRun['derived'])) ?> of these, so the gross
+                    amount was worked out from their line items and the cached VAT rates. That is
+                    the same arithmetic Clear Books does, but if it applies to every record, the
+                    field holding their total is spelled differently from what
+                    <code>ClearbooksInvoice::gross()</code> looks for.
+                </p>
+            <?php endif; ?>
+        <?php endif; ?>
+    </div>
+
+    <div class="card">
+        <h3>Schedule</h3>
+        <p class="muted">
+            Cron runs the sync script every few minutes; this is how often it actually fetches.
+            Hourly suits most businesses — the copy only has to be fresher than the documents
+            being uploaded. <strong>0 turns the schedule off</strong> and leaves the button below.
+        </p>
+
+        <form method="post" action="<?= e(url('/admin/clearbooks/invoice-schedule')) ?>" class="inline-form">
+            <?= csrf_field() ?>
+            <div class="input-with-button compact">
+                <input class="input" type="number" name="interval_minutes" inputmode="numeric"
+                       min="0" max="<?= e((string) InvoiceSync::MAX_INTERVAL) ?>"
+                       value="<?= e((string) $syncInterval) ?>"
+                       aria-label="Sync every, in minutes">
+                <button type="submit" class="btn">Save schedule</button>
+            </div>
+        </form>
+
+        <p class="field-hint">
+            Minutes, <?= e((string) InvoiceSync::MIN_INTERVAL) ?> to
+            <?= e((string) InvoiceSync::MAX_INTERVAL) ?>, or 0.
+            <?php if ($syncDueAt === null): ?>
+                The schedule is off; nothing will be fetched until somebody presses Sync now.
+            <?php else: ?>
+                Next scheduled run
+                <?= $syncDueAt <= time() ? 'is due now' : e('at ' . format_datetime(date('Y-m-d H:i:s', $syncDueAt))) ?>.
+            <?php endif; ?>
+        </p>
+
+        <div class="form-actions">
+            <form method="post" action="<?= e(url('/admin/clearbooks/sync-invoices')) ?>">
+                <?= csrf_field() ?>
+                <button type="submit" class="btn btn-primary">Sync now</button>
+            </form>
+        </div>
+
+        <p class="field-hint">
+            The first run on an established business fetches everything and can take several
+            minutes — two hundred records a page, paced to stay under Clear Books' rate limit. It
+            carries on even if the browser gives up waiting; reload this page to see how it ended.
+        </p>
+    </div>
+
+    <?php if ($recentInvoices !== []): ?>
+        <div class="table-wrap">
+            <table class="table table-compact">
+                <caption class="sr-only">The most recently dated purchase documents held locally</caption>
+                <thead>
+                    <tr>
+                        <th scope="col">Number</th>
+                        <th scope="col">Kind</th>
+                        <th scope="col">Supplier</th>
+                        <th scope="col">Reference</th>
+                        <th scope="col">Date</th>
+                        <th scope="col" class="amount">Gross</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    <?php foreach ($recentInvoices as $invoice): ?>
+                        <tr>
+                            <th scope="row" class="mono"><?= e((string) ($invoice['document_number'] ?? '—')) ?></th>
+                            <td><?= e(ucfirst(ClearbooksInvoice::label((string) $invoice['purchase_type']))) ?></td>
+                            <td class="break">
+                                <?= e((string) ($invoice['supplier_name'] ?? 'not cached')) ?>
+                            </td>
+                            <td class="break"><?= e(str_limit((string) ($invoice['reference'] ?? ''), 40)) ?></td>
+                            <td><?= e(format_date($invoice['document_date'] ?? null)) ?></td>
+                            <td class="amount"><?= e(format_money($invoice['gross_amount'] ?? null)) ?></td>
+                        </tr>
+                    <?php endforeach; ?>
+                </tbody>
+            </table>
+        </div>
+
+        <p class="field-hint">
+            The eight most recently dated, as a sanity check that what came back is what you
+            expect. Nothing reads these rows yet — matching an arriving document against them is
+            the next piece of work.
+        </p>
+    <?php endif; ?>
+
     <h2 class="section-title">Credit notes and refunds, by supplier</h2>
 
     <div class="card">
@@ -274,44 +468,4 @@ foreach ($cache as $row) {
         <?php endif; ?>
     </div>
 
-    <h2 class="section-title">Paperless correspondents</h2>
-
-    <div class="card">
-        <p>
-            Clear Books is the source of truth. A new supplier becomes a correspondent; a renamed
-            supplier renames its correspondent; a supplier that has gone has its correspondent
-            removed — but <strong>never while a Paperless document still points at it</strong>.
-            Those documents are moved to whichever supplier Clear Books now considers correct, or
-            left flagged for a person if that cannot be determined.
-        </p>
-
-        <ul class="meta-list">
-            <li>
-                <strong>Sync</strong>
-                <span class="badge <?= $syncOn ? 'badge-ok' : 'badge-muted' ?>"><?= $syncOn ? 'on' : 'off' ?></span>
-            </li>
-            <li>
-                <strong>May delete correspondents</strong>
-                <span class="badge <?= $deleteOn ? 'badge-ok' : 'badge-muted' ?>"><?= $deleteOn ? 'yes' : 'no' ?></span>
-            </li>
-        </ul>
-
-        <div class="form-actions">
-            <form method="post" action="<?= e(url('/admin/clearbooks/sync')) ?>">
-                <?= csrf_field() ?>
-                <input type="hidden" name="dry_run" value="1">
-                <button type="submit" class="btn">See what would change</button>
-            </form>
-
-            <form method="post" action="<?= e(url('/admin/clearbooks/sync')) ?>"
-                  data-confirm="Sync correspondents into Paperless now? This changes Paperless, not just InvoGrid.">
-                <?= csrf_field() ?>
-                <button type="submit" class="btn btn-primary">Sync correspondents</button>
-            </form>
-        </div>
-
-        <p class="field-hint">
-            Every create, rename, delete, re-point and flag is written to the activity log.
-        </p>
-    </div>
 <?php endif; ?>

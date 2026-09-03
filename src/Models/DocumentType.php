@@ -11,8 +11,7 @@ use App\Core\Database;
  *
  * Data rather than an enum, so a new type is an insert plus a prompt. Nothing
  * in the pipeline may hard-code a type key: it asks here for the Clear Books
- * resource to post to, the sign of the amounts and the Paperless document type
- * to write back.
+ * resource to post to and the sign of the amounts.
  */
 final class DocumentType
 {
@@ -32,6 +31,40 @@ final class DocumentType
     public static function find(string $typeKey): ?array
     {
         return Database::selectOne('SELECT * FROM document_types WHERE type_key = ?', [$typeKey]);
+    }
+
+    /**
+     * The type that posts to a Clear Books resource.
+     *
+     * The reverse of the lookup `SubmitStage` makes, and it is used by the
+     * Existing Invoice route: a record that came back from
+     * `purchases/creditNotes` is a credit note, and saying so is reading the
+     * accounts rather than classifying a scan.
+     *
+     * `purchases/bills` has **two** types pointing at it — an ordinary bill and
+     * a purchase refund, which is a bill with negative amounts. The lowest
+     * `sort_order` wins, which is the bill, and that is the right answer here:
+     * a linked document posts nothing, so the sign that distinction protects is
+     * never used. It matters only where a document is being created, and there
+     * a person confirms it (§24).
+     *
+     * Both spellings of the resource are accepted, as `ClearBooksClient` does,
+     * because `clearbooks_resource` holds `purchases/bills` and the API's own
+     * segment is `bills`.
+     *
+     * @return array<string,mixed>|null
+     */
+    public static function forResource(string $resource): ?array
+    {
+        $segment = ltrim(str_replace('purchases/', '', trim($resource)), '/');
+
+        return Database::selectOne(
+            'SELECT * FROM document_types
+              WHERE active = 1 AND (clearbooks_resource = ? OR clearbooks_resource = ?)
+              ORDER BY sort_order, id
+              LIMIT 1',
+            [$segment, 'purchases/' . $segment]
+        );
     }
 
     public static function label(?string $typeKey): string
@@ -97,19 +130,6 @@ final class DocumentType
             self::all(),
             static fn (array $row): bool => (int) $row['requires_confirmation'] === 1
         ));
-    }
-
-    /**
-     * Point a document type at a Paperless document type, or at nothing.
-     *
-     * Null is a legitimate answer, not a missing one: a site that does not use
-     * Paperless document types leaves every mapping empty, and the write-back
-     * simply does not touch the field. Set from the Settings screen; until
-     * that existed this column could only be changed in SQL.
-     */
-    public static function setPaperlessType(int $id, ?int $paperlessTypeId): void
-    {
-        Database::update('document_types', ['paperless_document_type_id' => $paperlessTypeId], $id);
     }
 
     /**

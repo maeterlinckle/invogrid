@@ -10,7 +10,6 @@ use App\Core\Request;
 use App\Core\Response;
 use App\Models\AuditLog;
 use App\Models\CustomField;
-use App\Services\PaperlessFields;
 use Throwable;
 
 /**
@@ -20,6 +19,12 @@ use Throwable;
  * stage picks it up on the very next document — `CustomField::forPrompt()` is
  * read fresh each run and injected as `{{ customFields }}`. Nothing has to be
  * listed in a prompt by hand.
+ *
+ * This screen used to have a second half: each field could be paired with a
+ * Paperless custom field, and the form could create one over the API. All of
+ * that is gone with Paperless itself. What is left is the half that was always
+ * doing the work — a field's key, label, data type and prompt hint are what
+ * drive extraction, and they never needed anywhere to be written back to.
  *
  * Two rules the screen exists to enforce:
  *
@@ -34,13 +39,9 @@ final class FieldController extends Controller
 {
     public function index(): void
     {
-        $paperless = PaperlessFields::available();
-
         $this->view('admin/fields', [
-            'pageTitle'       => 'Custom fields',
-            'fields'          => CustomField::all(),
-            'paperlessFields' => $this->byId($paperless['fields']),
-            'paperlessError'  => $paperless['error'],
+            'pageTitle' => 'Custom fields',
+            'fields'    => CustomField::all(),
         ]);
     }
 
@@ -53,25 +54,13 @@ final class FieldController extends Controller
             $this->notFound('No such custom field.');
         }
 
-        $paperless = PaperlessFields::available();
-
         $this->view('admin/field-form', [
-            'pageTitle'       => $field === null ? 'Add a custom field' : 'Edit ' . $field['label'],
-            'field'           => $field,
-            'paperlessFields' => $paperless['fields'],
-            'paperlessError'  => $paperless['error'],
-            'alreadyPaired'   => PaperlessFields::alreadyPaired($field === null ? null : (int) $field['id']),
+            'pageTitle' => $field === null ? 'Add a custom field' : 'Edit ' . $field['label'],
+            'field'     => $field,
         ]);
     }
 
-    /**
-     * Create or update, and — if asked — make the Paperless field too.
-     *
-     * The Paperless side is done **first** when it is being created, because a
-     * failure there should leave nothing behind. The other order would give an
-     * InvoGrid field that silently never writes back, which looks like it is
-     * working right up until somebody goes looking for the value in Paperless.
-     */
+    /** Create or update. */
     public function save(?string $id = null): void
     {
         $field = $id === null ? null : CustomField::findById((int) $id);
@@ -81,47 +70,46 @@ final class FieldController extends Controller
         }
 
         $input = [
-            'field_key'          => (string) Request::post('field_key', ''),
-            'label'              => (string) Request::post('label', ''),
-            'data_type'          => (string) Request::post('data_type', 'string'),
-            'select_options'     => (string) Request::post('select_options', ''),
-            'prompt_hint'        => (string) Request::post('prompt_hint', ''),
-            'paperless_field_id' => Request::post('paperless_field_id', ''),
-            'active'             => Request::boolean('active'),
-            'source'             => $field === null ? CustomField::EXTRACTED : (string) $field['source'],
+            'label'          => (string) Request::post('label', ''),
+            'data_type'      => (string) Request::post('data_type', 'string'),
+            'select_options' => (string) Request::post('select_options', ''),
+            'prompt_hint'    => (string) Request::post('prompt_hint', ''),
+            'active'         => Request::boolean('active'),
+
+            // Never taken from the form. `source` says whether a value is read
+            // off the page or produced by submitting, which is a fact about
+            // where the field's data comes from rather than a preference — and
+            // the two seeded `submission` fields are the only ones anything
+            // knows how to fill in.
+            'source'         => $field === null ? CustomField::EXTRACTED : (string) $field['source'],
         ];
+
+        /*
+         * The key is only ever read when creating.
+         *
+         * The edit form renders it as read-only *text*, so a browser posts
+         * nothing for it — and passing `''` through to `CustomField::update()`
+         * makes its "the key cannot change" guard fire on every save, because
+         * an empty key does not equal the stored one. That guard is right; the
+         * caller was wrong to hand it a value it had not been given. Omitting
+         * the key entirely says what is true: this request does not propose one.
+         */
+        if ($field === null) {
+            $input['field_key'] = (string) Request::post('field_key', '');
+        }
 
         $back = '/admin/fields/' . ($field === null ? 'new' : (int) $field['id']);
 
         try {
-            if (Request::boolean('create_in_paperless')) {
-                $input['paperless_field_id'] = PaperlessFields::create(
-                    trim($input['label']) === '' ? $input['field_key'] : $input['label'],
-                    $input['data_type'],
-                    CustomField::selectOptions($input['select_options'])
-                );
-
-                AuditLog::record('paperless.custom_field_created', null, sprintf(
-                    '%s created Paperless custom field %d "%s" (%s).',
-                    Auth::displayName(),
-                    $input['paperless_field_id'],
-                    $input['label'],
-                    $input['data_type']
-                ));
-            }
-
             if ($field === null) {
-                $newId = CustomField::create($input);
+                CustomField::create($input);
 
                 AuditLog::record('fields.created', null, sprintf(
-                    '%s added the custom field "%s" (%s, %s)%s.',
+                    '%s added the custom field "%s" (%s, %s).',
                     Auth::displayName(),
                     $input['field_key'],
                     $input['label'],
-                    $input['data_type'],
-                    $input['paperless_field_id'] === '' || $input['paperless_field_id'] === null
-                        ? ', not paired with Paperless'
-                        : ', paired with Paperless field ' . $input['paperless_field_id']
+                    $input['data_type']
                 ));
 
                 Flash::success('Added "' . $input['label'] . '". The next document extracted will be asked about it.');
@@ -184,20 +172,5 @@ final class FieldController extends Controller
             : '"' . $field['label'] . '" is out of use. Values already read off documents are kept.');
 
         Response::redirect('/admin/fields');
-    }
-
-    /**
-     * @param array<int,array<string,mixed>> $fields
-     * @return array<int,array<string,mixed>>
-     */
-    private function byId(array $fields): array
-    {
-        $byId = [];
-
-        foreach ($fields as $field) {
-            $byId[(int) ($field['id'] ?? 0)] = $field;
-        }
-
-        return $byId;
     }
 }

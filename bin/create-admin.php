@@ -128,5 +128,5 @@ echo "\nCreated user '{$username}' (#{$id}) with the {$role} role.\n";
 
 if ($existingUsers === 0) {
     echo "\nThis is the first account, so it is an administrator. Sign in and fill in\n";
-    echo "Settings before pointing a Paperless workflow at the webhook receiver.\n";
+    echo "Settings, then upload a document from Documents to Upload.\n";
 }

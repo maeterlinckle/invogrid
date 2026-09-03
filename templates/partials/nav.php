@@ -22,6 +22,24 @@ $links = [
     ['label' => 'Documents', 'href' => '/documents', 'capability' => 'documents.view'],
     ['label' => 'Review queue', 'href' => '/review', 'capability' => 'queue.view'],
 
+    // The other flow's queue. Its own top-level entry rather than a tab on the
+    // review queue, because the two screens ask different questions of
+    // different data — one has an extraction to correct, the other has a
+    // handwritten number that did not find its Clear Books record.
+    ['label' => 'Existing invoices', 'href' => '/existing', 'capability' => 'queue.view'],
+
+    // The third queue, and a third question again: not "is this extraction
+    // right" and not "which record does this number point at", but "is this
+    // invoice one Clear Books already has". Top level beside the other two
+    // because a document sitting in it is a bill nobody can post until somebody
+    // decides, and a queue tucked inside another screen does not get worked.
+    ['label' => 'Duplicates', 'href' => '/duplicates', 'capability' => 'queue.view'],
+
+    // The way in. Top level rather than tucked under Settings: it is the one
+    // thing somebody comes to this application to *do* that is not reading
+    // something. A viewer does not hold `documents.upload` and never sees it.
+    ['label' => 'Upload', 'href' => '/documents/upload', 'capability' => 'documents.upload'],
+
     // Everything occasional: set up once, visited rarely.
     ['label' => 'Settings', 'href' => '/admin/settings', 'capability' => null, 'children' => [
         ['label' => 'Application settings', 'href' => '/admin/settings', 'capability' => 'settings.manage'],

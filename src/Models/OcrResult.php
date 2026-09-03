@@ -39,6 +39,10 @@ final class OcrResult
             $notesPresent = $structured['notesPresent'] ? 1 : 0;
         }
 
+        $annotations = is_array($structured) && is_array($structured['handwrittenAnnotations'] ?? null)
+            ? $structured['handwrittenAnnotations']
+            : null;
+
         return Database::insert('ocr_results', [
             'document_id'        => $documentId,
             'llm_provider'       => $fields['llm_provider'],
@@ -49,11 +53,57 @@ final class OcrResult
                 ? json_encode($structured, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE)
                 : null,
             'notes_present'      => $notesPresent,
+
+            // The three annotation fields, promoted for the same reason
+            // `notes_present` was: the routing decision tests one of them on
+            // every document, and a decision that has to decode a JSON blob to
+            // reach its input is a decision nothing can index or query.
+            'clearbooks_number'  => self::reference($structured['clearbooksNumber'] ?? null),
+            'project_code'       => self::reference($structured['project'] ?? null),
+            'annotations_json'   => $annotations === null
+                ? null
+                : json_encode($annotations, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE),
+
             'prompt_template_id' => $fields['prompt_template_id'] ?? null,
             'prompt_tokens'      => $fields['prompt_tokens'] ?? null,
             'completion_tokens'  => $fields['completion_tokens'] ?? null,
             'duration_ms'        => $fields['duration_ms'] ?? null,
         ]);
+    }
+
+    /**
+     * One of the two hand-written references, tidied but not judged.
+     *
+     * The "#" the prompt says a Clearbooks Number is usually written with is
+     * not part of the reference, and `#80421` and `80421` must not be two
+     * different answers. Nothing else is corrected: whether what came back is
+     * *usable* is `isUsableNumber()`'s question, asked by the stage that routes
+     * on it, and a column that quietly dropped an unusable value would leave
+     * nothing to show the person asking why their document went the other way.
+     */
+    private static function reference(mixed $value): ?string
+    {
+        if (!is_scalar($value)) {
+            return null;
+        }
+
+        $trimmed = trim(ltrim(trim((string) $value), '#'));
+
+        return $trimmed === '' ? null : mb_substr($trimmed, 0, 32);
+    }
+
+    /**
+     * Is this Clearbooks Number one the pipeline can act on?
+     *
+     * The prompt is explicit that the number is digits only, and says why: a
+     * circled code with letters in it is a Project, which is a different field
+     * with a different meaning. So a value that is not digits is a misread, and
+     * routing a document to the Existing Invoice flow on the strength of one
+     * would send it looking for a Clear Books record that cannot exist.
+     */
+    public static function isUsableNumber(?string $number): bool
+    {
+        return $number !== null && $number !== '' && ctype_digit($number);
     }
 
     /**
@@ -82,9 +132,10 @@ final class OcrResult
     /**
      * The transcription a downstream prompt should be given.
      *
-     * The extraction prompts are told to ignore everything from `### Notes`
-     * onward, so the section travels with the text for a human without being
-     * read as invoice content by the machine.
+     * The transcription and nothing else. It used to carry an appended
+     * `### Notes` section restating the annotations, which every extraction
+     * prompt then had to be told to skip; the annotations are columns now, and
+     * `annotations()` is where a prompt that wants them gets them.
      *
      * @param array<string,mixed> $row
      */
@@ -93,6 +144,58 @@ final class OcrResult
         $text = $row['ocr_text'] ?? null;
 
         return is_string($text) && $text !== '' ? $text : (string) ($row['raw_text'] ?? '');
+    }
+
+    /**
+     * The handwritten marks found on the page, each as the prompt describes
+     * them: `{text, inkColor, marksPrintedText, location}`.
+     *
+     * Read from its own column rather than out of `structured_json`, so a
+     * caller that wants only this does not decode the whole response — and so
+     * the list is empty rather than missing when the model answered in prose.
+     *
+     * @param array<string,mixed> $row
+     * @return array<int,array<string,mixed>>
+     */
+    public static function annotations(array $row): array
+    {
+        $json = $row['annotations_json'] ?? null;
+
+        if (!is_string($json) || $json === '') {
+            return [];
+        }
+
+        $decoded = json_decode($json, true);
+
+        if (!is_array($decoded)) {
+            return [];
+        }
+
+        return array_values(array_filter($decoded, 'is_array'));
+    }
+
+    /**
+     * The Clearbooks Number read off the page, or null.
+     *
+     * @param array<string,mixed> $row
+     */
+    public static function clearbooksNumber(array $row): ?string
+    {
+        $value = $row['clearbooks_number'] ?? null;
+
+        return is_string($value) && $value !== '' ? $value : null;
+    }
+
+    /**
+     * The project code read off the page, or null.
+     *
+     * @param array<string,mixed> $row
+     */
+    public static function projectCode(array $row): ?string
+    {
+        $value = $row['project_code'] ?? null;
+
+        return is_string($value) && $value !== '' ? $value : null;
     }
 
     /** @return array<string,mixed>|null */

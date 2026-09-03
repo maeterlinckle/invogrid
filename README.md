@@ -3,13 +3,12 @@
 **InvoGrid by Junction** — a self-hosted web application that turns scanned purchase
 documents into Clear Books records.
 
-A Paperless-ngx workflow tells InvoGrid a document has arrived. InvoGrid pulls the
-PDF, renders each page to an image, transcribes it with a vision-capable LLM,
-extracts the header, supplier and line items in several focused calls, matches
-everything it can against the current Clear Books lists, and puts anything it is
-not certain about in front of a human. Once a person has resolved the
-uncertainties, the document is submitted to Clear Books and the result is written
-back to Paperless.
+Upload a PDF and InvoGrid renders each page to an image, transcribes it with a
+vision-capable LLM, extracts the header, supplier and line items in several
+focused calls, matches everything it can against the current Clear Books lists,
+and puts anything it is not certain about in front of a human. Once a person has
+resolved the uncertainties, the document is submitted to Clear Books with the
+scan attached.
 
 Nothing is created in Clear Books automatically. Every entity that did not match
 with full confidence is a decision a person makes, pre-filled from the extraction
@@ -23,21 +22,41 @@ standalone application with its own copy of everything.
 
 ## Status
 
-The pipeline is complete, end to end. A scanned document arrives from a
-Paperless workflow, has its pages rendered and transcribed by a vision model,
+The pipeline is complete, end to end. A scanned document is uploaded, has its
+pages rendered and transcribed by a vision model,
 is read into structured fields by three focused extraction calls, is matched
 against cached Clear Books suppliers, account codes and VAT rates, and either
 reaches **Ready to submit** on its own or stops at **Needs review** with the
 specific reason attached. A person resolves what is left on the review screen —
 editing anything the model got wrong, and creating a missing supplier in Clear
 Books from a form they confirm — then submits it. The bill or credit note is
-created in Clear Books with the PDF attached, and the Paperless document is
-updated to match.
+created in Clear Books with the PDF attached.
+
+A document with a **Clearbooks Number** written on it takes the other fork, and
+it runs the identical pipeline: read, extracted, matched, everything stored the
+same way. Only the last step differs. That number refers to an invoice already
+in Clear Books, so nothing is posted — the record is found in InvoGrid's synced
+copy of Clear Books, its date and total are checked against the extraction
+exactly, and the PDF is attached to it. Nothing on the Clear Books record is
+changed. What does not match exactly waits on the **Existing invoices** screen,
+where it is linked by hand, posted as a new invoice instead, or deleted — and
+nothing there resolves itself.
+
+A document with **no** such number is checked against that same synced copy
+before it can be submitted, because the annotation is a fact about the page
+rather than about the ledger: an invoice keyed into Clear Books by hand months
+ago carries no number, and neither does a second scan of one already filed.
+Where the supplier, their reference, the date and the total agree closely enough
+to be worth a look, the document stops on the **Duplicates** screen and shows
+InvoGrid's reading beside the Clear Books record, field by field. A person
+either deletes the InvoGrid copy or confirms it is genuinely new, at which point
+it carries on to be reviewed and submitted like any other and is never stopped
+for this again. Nothing in Clear Books is touched either way.
 
 Custom fields and the prompts themselves are managed in the application:
-**Settings → Custom fields** defines what to look for on a page and where the
-value goes in Paperless, and **Settings → Prompts** edits what the models are
-actually asked, versioned so any change can be undone. Neither needs a deploy.
+**Settings → Custom fields** defines what to look for on a page, and
+**Settings → Prompts** edits what the models are actually asked, versioned so any
+change can be undone. Neither needs a deploy.
 
 **Settings → Users** creates and manages accounts. There is no sign-up page:
 every account is made by an administrator, who sets a first password the account
@@ -47,8 +66,8 @@ The dashboard shows the counts, what the machine tripped over, who did what, and
 — the one nothing else reports — anything that has **stopped moving**: a
 document that ran out of retries is not marked *failed* and appears in no count,
 so without that list it simply rots. `/documents` filters by stage, type,
-correspondent and date range, and its search reaches into what was read off the
-page, not only what Paperless says.
+supplier and date range, and its search reaches into what was read off the page
+as well as the filename it arrived under.
 
 When something does fail, the document page says which stage, which call, which
 model, and what the far end actually answered — without a server log.
@@ -60,15 +79,13 @@ monogram. Any submitted document has a **printable summary** — what was read o
 the page and what Clear Books did with it, on one sheet, on its own layout
 rather than the ordinary page with its menus hidden.
 
-**Settings → Application settings** is where the rest lives: the Paperless and
-Clear Books addresses and credentials, the API keys, which model runs each stage,
-how a page is rendered for the vision call, and the thresholds behind the
-dashboard's "not moving" list. A credential shows as *set* or *not set* and never
+**Settings → Application settings** is where the rest lives: the Clear Books
+address and credentials, the API keys, the largest document that may be
+uploaded, which model runs each stage, how a page is rendered for the vision
+call, and the thresholds behind the dashboard's "not moving" list. A credential shows as *set* or *not set* and never
 as itself; an empty box means leave it alone, and there is a separate tick to
-clear one. Buttons beside the Paperless and model cards make the credential prove
-itself with a real call, rather than confirming only that a box is not empty. The
-same card is where each InvoGrid document type is pointed at a Paperless document
-type.
+clear one. Buttons beside the model cards make a credential prove itself with a
+real call, rather than confirming only that a box is not empty.
 
 **Settings → Activity log** is the full record of what people did — filterable by
 action, person, date and free text, and paged. Nothing on it writes. The
@@ -120,7 +137,7 @@ sudo ./install.sh
 
 It asks a dozen questions and does the rest: packages, database and grant,
 `.env` with a generated `APP_KEY`, file ownership, the Apache or nginx site,
-the firewall, the migrations, the first administrator, the Paperless webhook
+the firewall, the migrations, the first administrator, the
 secret, and the cron entries. It is safe to run twice — an existing database is
 left alone and its credentials refreshed, and **an existing `APP_KEY` is never
 replaced**, because every stored credential is encrypted with it.
@@ -232,7 +249,7 @@ there is no undo and a scripted `--yes` is exactly how somebody empties the
 wrong database. `reset-database` also makes you type the database name.
 
 Neither can withdraw anything from Clear Books. What is submitted is submitted;
-what is lost is InvoGrid's record of it — including which Paperless documents
+what is lost is InvoGrid's record of it — including which documents
 have already been processed, so anything a workflow re-sends would be read and
 submitted a second time.
 
@@ -269,8 +286,8 @@ php bin/console.php key:generate
 
 Copy the printed line into `.env` as `APP_KEY`.
 
-This key encrypts every credential stored in the database — the Paperless token,
-the Clear Books OAuth2 secret and tokens, the LLM API keys, the webhook secret —
+This key encrypts every credential stored in the database — the Clear Books
+OAuth2 secret and tokens, and the LLM API keys —
 and binds session fingerprints. **Back it up with the database, not instead of
 it**: a database restored onto a machine without the matching key has secrets
 that cannot be read, and they would all have to be re-entered. Without a key set,
@@ -423,10 +440,9 @@ credential, for a site that would rather keep secrets out of the database
 entirely.
 
 **The `settings` table**, edited on **Settings → Application settings**, holds
-everything an administrator changes day to day: the Paperless address and token,
-the Clear Books OAuth2 credentials and business id, the OpenAI and Anthropic API
-keys, the webhook shared secret, and which provider and model each pipeline stage
-uses. `php bin/console.php settings:set <key>` does the same job from a terminal
+everything an administrator changes day to day: the Clear Books OAuth2
+credentials and business id, the OpenAI and Anthropic API keys, the upload size
+limit, and which provider and model each pipeline stage uses. `php bin/console.php settings:set <key>` does the same job from a terminal
 and is what an unattended install uses — a credential has to be settable before
 anybody can sign in to change one.
 
@@ -435,136 +451,134 @@ fallback. Secrets are stored encrypted under `APP_KEY` and are never rendered
 back to a browser — the Settings screen shows whether a credential is set, never
 what it is.
 
-`INVOGRID_WEBHOOK_SECRET` (or the `paperless_webhook_secret` setting) is what the
-Paperless workflow must present to the webhook receiver. Anything without it is
-rejected.
+`ingest_max_upload_mb` (default 25) is the largest document an ingest route will
+accept. It has no `.env` fallback, and PHP's own `upload_max_filesize` and
+`post_max_size` still outrank it — the upload page quotes whichever is actually
+smallest.
 
-Two settings have no `.env` fallback and govern how far the correspondent sync
-may go: `clearbooks_sync_correspondents` turns it off entirely, and
-`clearbooks_delete_correspondents` turns off deletion alone. Both default on.
-
-Three more govern the submission: `paperless_processed_tag_id` (the tag put on a
-document once it reaches Clear Books; empty means do not tag),
-`paperless_replace_content` (whether InvoGrid's transcription replaces
-Paperless's own OCR text, on) and `clearbooks_attach_pdf` (whether the scan is
-attached to the created record, on).
+`clearbooks_attach_pdf` (on) decides whether the scan is attached to the record
+created in Clear Books.
 
 ---
 
-## Paperless setup
+## Getting documents in
 
-InvoGrid is told about a document by a Paperless **workflow** with a single
-webhook action. Everything else — the metadata, the PDF — InvoGrid fetches from
-the API itself, because a webhook body is only ever what somebody typed into a
-form and cannot be trusted to be complete or current.
+A document reaches InvoGrid through an **ingest route**. One exists today — the
+upload page — and the design assumes there will be more.
 
-### 1. Generate the shared secret
+An ingest route has exactly one job: put the PDF on disk and create a
+`documents` row at `received`, recording where the file came from. Everything
+after that is the pipeline, which has no idea routes exist. That boundary is the
+whole point: adding a route is a new caller of one method, not a change to OCR,
+extraction, matching or the queue.
 
-```bash
-php bin/console.php secret:generate
-php bin/console.php settings:set paperless_webhook_secret
+```
+src/Services/Ingest/
+  IngestCandidate.php   a file being offered, and how to move it
+  IngestSource.php      the routes that exist, and what to call them on screen
+  Ingestor.php          the one entry point: check, insert, store, queue
+  IngestException.php   a candidate that was refused
 ```
 
-The second command reads the value from standard input, so it never reaches your
-shell history. Keep a copy — you are about to paste it into Paperless.
+### Uploading
 
-### 2. Create the workflow
+**Documents → Upload** (`/documents/upload`). PDFs only, several at a time, each
+accepted or refused on its own so one bad file does not discard the rest of the
+batch.
 
-In Paperless: **Manage → Workflows → Create**.
+It needs the `documents.upload` capability, which **reviewers and administrators
+hold and viewers do not**. Accepting a file starts a pipeline that spends money
+on every page of it, so it sits with retrying rather than with viewing.
 
-**Trigger type: `Document Added`.**
+The page quotes the limit that will actually apply, which is the smallest of:
 
-Not `Consumption Started`. This matters and is not a matter of taste: the
-document row does not exist yet at consumption time, so Paperless renders
-`{{doc_id}}` to an **empty string** — the placeholder is populated from
-`document.pk`, and there is no document to have a pk. A workflow on that trigger
-delivers a webhook with no id in it, which InvoGrid rejects with a 400 saying so.
-`Document Updated` also works if you want InvoGrid re-notified on later edits.
-
-Under **Filters**, scope it to whichever sources are actually purchase paperwork
-— typically Consume Folder, API Upload and Mail Fetch — and, if invoices are
-tagged on the way in, to that tag. A workflow that fires on everything means
-InvoGrid registering delivery notes and payslips and somebody having to mark them
-ignored.
-
-### 3. Add the webhook action
-
-| Field | Value |
+| Limit | Where it is set |
 |---|---|
-| Action type | `Webhook` |
-| URL | `https://invogrid.example.com/webhook/paperless` |
-| Use parameters | **on** |
-| Parameters | key `doc_id`, value `{{doc_id}}` |
-| Send as JSON (`as_json`) | **on** |
-| Headers | key `X-InvoGrid-Token`, value the shared secret |
-| Include document | **off** |
+| `ingest_max_upload_mb` | **Settings → Incoming documents**, default 25 |
+| `upload_max_filesize` | php.ini |
+| `post_max_size` | php.ini |
 
-**Use the final HTTPS URL.** Paperless posts with `follow_redirects=False`, so if
-`FORCE_HTTPS` bounces an `http://` webhook to `https://`, the delivery simply
-fails — and it fails looking like a network problem rather than a configuration
-one.
+The last two cannot be raised from inside the application. A form promising 25MB
+while PHP silently drops anything over 2MB produces the worst kind of bug
+report — *"it just goes back to the list"* — so the screen says what is really
+true rather than what the setting claims.
 
-*Include document* stays off deliberately: it would attach the file to every
-webhook, and InvoGrid downloads the original from the API a moment later anyway.
-Sending it twice buys nothing and makes the five-second budget tighter.
+### What is checked, and where
 
-The secret may instead be sent as a `token` parameter or in the query string;
-the header is simply the tidiest. `Authorization: Bearer <secret>` works too.
+Twice, deliberately, and they are not the same check.
 
-### 4. Confirm what actually arrives
+**`Ingestor::accept()`**, before anything is written: the file is readable, is
+not empty or truncated, is within the limit, and begins `%PDF-`. The header is
+read rather than the extension trusted and rather than the browser's
+`Content-Type` believed — a JPEG renamed to `.pdf` fails here. A refused
+candidate leaves nothing behind at all.
 
-Placeholder names change between Paperless versions, and the surest check is one
-real delivery. Every request to the receiver — accepted or rejected — is
-appended to:
+**The `ingest` pipeline stage**, a moment later from the queue: the *stored* file
+still exists, is still a PDF, and `pdfinfo` can find pages in it. This is the
+gate in front of the expensive part — OCR renders every page and sends each one
+to a vision model, and a truncated PDF should be caught for the cost of a stat
+rather than discovered by a model that has already been paid for three pages of
+nothing.
 
-```
-storage/logs/webhook.log
-```
+The second check exists because a future watched-directory route will hand over
+files another process is still writing. That failure is **retryable**, not
+permanent: the next attempt a minute later usually finds a whole document.
 
-with the content type, whether a secret header was present, and the body. The
-secret itself is redacted. Trigger the workflow on a test document, read one
-line, and you know exactly what your Paperless sends.
+### Where the PDF goes
 
-The receiver is deliberately liberal about where it looks: `doc_id`,
-`document_id`, `id`, `pk`, `documentId` or `docId`, in a JSON body, a
-form-encoded body, the query string, or a body containing nothing but the number.
-`doc_id` is what the table above configures and what Paperless's own placeholder
-is called.
+`storage/pdf/{document_id}/source.pdf`, outside the webroot, with the rendered
+page images beside it. `documents.pdf_path` is stored relative to the storage
+root, so the storage directory can be moved or restored onto another machine
+without invalidating every row. The PDF is served back only through
+`/documents/{id}/pdf`, behind `documents.view`.
 
-### What the receiver does, and why it is so small
+> **InvoGrid holds the only copy.** A document was uploaded to it, not fetched
+> from a system that still has it. `manage.sh backup` includes `storage/pdf` for
+> exactly this reason, and `manage.sh reset-storage` is destructive in a way it
+> was not when documents came from elsewhere.
 
-Paperless allows a webhook **five seconds** (`httpx` client timeout) and
-**retries a non-2xx up to three times** with backoff. So the endpoint checks the
-secret, writes one row, queues one job and returns — anything slower would time
-out, and a timed-out webhook is a retried webhook.
+### What is recorded about arrival
 
-Re-delivery is therefore normal rather than exceptional, and is handled by the
-unique index on `paperless_doc_id`: the second delivery finds the document
-already registered, answers `200 already-known`, and does not re-run anything. A
-document already past `received` is never restarted by a webhook — it may
-already have decisions on it that a human made.
+Four columns on `documents`, and nothing downstream reads any of them:
 
-| Response | Meaning |
+| Column | What it holds |
 |---|---|
-| `202` | Registered and queued |
-| `200` | Already known; nothing done |
-| `400` | No usable document id — check the trigger type |
-| `401` | Missing or wrong shared secret |
-| `503` | No shared secret configured in InvoGrid yet |
+| `ingest_source` | the route: `upload`, or `legacy` for anything that predates native ingest |
+| `original_filename` | what the file was called, for display and for searching |
+| `ingested_by` | the user, where a person was involved; null for a robot |
+| `ingested_at` | when |
 
-### If deliveries never arrive
+They exist to answer *"where did this come from?"*, which is the first question
+asked about a document that looks wrong. The document page prints them under the
+heading — *Uploaded as acme-invoice-4471.pdf* — and `/documents` searches the
+filename alongside the supplier and the invoice number.
 
-Paperless refuses to post to private addresses when
-`PAPERLESS_WEBHOOKS_ALLOW_INTERNAL_REQUESTS` is `false` (it defaults to `true`).
-`PAPERLESS_WEBHOOKS_ALLOWED_SCHEMES` and `PAPERLESS_WEBHOOKS_ALLOWED_PORTS`
-can also block a URL before it is ever sent. A blocked webhook is logged on the
-Paperless side, not this one, so an empty `webhook.log` points at that end.
+### Adding a route later
+
+A watched directory is the likely next one. It would be a script that finds
+files, and for each one:
+
+```php
+Ingestor::accept(IngestCandidate::fromFile(
+    $path,
+    basename($path),
+    IngestSource::WATCHED_FOLDER,
+));
+```
+
+plus a constant and a label in `IngestSource`. The checks, the storage layout,
+the `documents` row and the queued first stage all come with it. `moveTo()` is
+the reason `IngestCandidate` is a class rather than four arguments: a browser
+upload must be moved with `move_uploaded_file()`, which refuses any path PHP did
+not itself receive as an upload, and a file found on disk is the opposite case —
+`move_uploaded_file()` would refuse *it*. Each route knows which it is; nothing
+downstream needs to.
 
 ---
 
 ## The queue
 
-The webhook registers a document; a queue worker does the work. Run it from
+An ingest route registers a document; a queue worker does the work. Run it from
 cron, once a minute:
 
 ```
@@ -605,8 +619,8 @@ LOCKED`), so the lock is about not piling up processes rather than about
 correctness.
 
 Failures back off — 1, 2, 4, 8 minutes — for up to four attempts, and a failure
-that will never come right on its own (a document deleted in Paperless) is not
-retried at all. After that the document sits in `Failed` with the reason on it,
+that will never come right on its own (a revoked API key, a model id that does
+not exist) is not retried at all. After that the document sits in `Failed` with the reason on it,
 and a person retries it from `/documents` once whatever broke is fixed.
 
 ### The other cron job: refreshing the Clear Books lists
@@ -625,8 +639,6 @@ is so it does not collide with everything else on the hour.
 
 ```bash
 php bin/refresh-clearbooks.php --status     what is cached now, without fetching
-php bin/refresh-clearbooks.php --dry-run    say what would change, change nothing
-php bin/refresh-clearbooks.php --sync       also sync suppliers to Paperless correspondents
 ```
 
 Both jobs are safe to run by hand at any time, and both take a lock so a slow
@@ -634,6 +646,38 @@ run and the next tick cannot overlap.
 
 There is also a **"Refresh now"** button on *Settings → Clear Books* for the
 case where somebody has just added the supplier they are standing in front of.
+
+### The third cron job: the invoice sync
+
+A local copy of every bill and credit note **already in Clear Books**, so that
+InvoGrid can tell whether a document that has just been uploaded has been posted
+before. Clear Books has no search endpoint and throttles above five requests a
+second, so the question is answered from a copy rather than asked of them once
+per document.
+
+```
+*/5 * * * * www-data /usr/bin/php /var/www/invogrid/bin/sync-invoices.php >/dev/null 2>&1
+```
+
+Every five minutes, but **the schedule lives in the database, not in cron**: the
+script only fetches when the interval on *Settings → Clear Books* says it is
+due. Hourly is the default and suits most businesses. Changing it is a form
+field rather than a root edit of `/etc/cron.d`, and it means the **"Sync now"**
+button on that page runs exactly the code cron runs.
+
+```bash
+php bin/sync-invoices.php            sync if the schedule says it is due
+php bin/sync-invoices.php --force    sync now, whatever the schedule says
+php bin/sync-invoices.php --status   what is stored, without fetching
+```
+
+Clear Books is the source of truth here as it is for suppliers: a document
+deleted there disappears locally on the next run. Nothing is ever written back —
+this only reads. The screen shows the last run, what it fetched, and what it
+deleted.
+
+Nothing consumes these rows yet; matching an arriving document against them is
+the next piece of work.
 
 ---
 
@@ -737,30 +781,315 @@ makes things worse is one click to revert and every `ocr_results` row can say
 which version produced it.
 
 It asks for a clean transcription in `ocrText` — no correcting, no normalising,
-numbers exactly as printed, page boundaries marked — with a `### Notes` section
-appended **inside** that string, so later stages can find the annotations by
-reading the text alone. Alongside it come `handwrittenAnnotations[]`, a
-best-guess `clearBooksNumber` and `projectCode`, and a `reviewNotes` list.
+numbers exactly as printed, page boundaries marked — **and nothing else in that
+string**. Everything the model found beyond the transcription comes back beside
+it, as data: `handwrittenAnnotations[]`, `notesPresent`, and a best-guess
+`clearbooksNumber` and `project`.
+
+It used to append a `### Notes` section inside `ocrText` restating those fields
+in prose, because the n8n flow it came from had no database and nowhere else to
+put them. That is gone. The section was a second, lossier copy of data already
+stored, every extraction prompt had to be told to skip past it, and it put text
+into the permanent record of a page that is not printed on that page.
 
 Two field rules matter more than the rest:
 
-- A **Clear Books Number** is digits only, almost always in red pen, usually but
+- A **Clearbooks Number** is digits only, almost always in red pen, usually but
   not always preceded by `#`, occasionally circled. **A printed number is never
   substituted for a missing one** — not the supplier's invoice number, not a PO
   number, not an account reference. Null is a correct answer here; a wrong
-  number is far worse than none.
+  number is far worse than none. This one decides which flow the document takes
+  (below), so the rule is load-bearing rather than cosmetic.
 - A **project code** is normally two letters and two digits, occasionally up to
   four letters, and may be handwritten, printed-and-circled, or plain printed
   text. Where there are several candidates the handwritten or circled one wins,
   and the ambiguity gets a review note.
 
-> **Not yet reconciled with production.** This prompt implements the specified
-> behaviour but is not a verbatim copy of the one running in the existing n8n
-> flow, which was not available when it was written. Diff the two and keep
-> whichever phrasing production has earned.
+---
+
+## Existing invoice, or new one
+
+Every document is put on one of two routes the moment the transcription lands.
+**Both routes then run the same pipeline** — extraction, matching, all of it —
+and part company only at the very end.
+
+A Clearbooks Number written on the page is a reference to an invoice **already
+in Clear Books**, so the document is a scan belonging to a record that exists,
+not a bill to post.
+
+| On the page | Route | What is different about it |
+|---|---|---|
+| A Clearbooks Number, digits only | **Existing invoice** | At the end, it is matched to the Clear Books record it names and the PDF is attached to it |
+| Nothing, or a number that is not digits | **New invoice** | At the end, a bill or credit note is created in Clear Books |
+
+A number that came back with letters in it is a misread, not a reference: the
+prompt is explicit that a circled code containing letters is a Project, which is
+a different field. It does not route, but it is stored and the document's
+history says what it was and why it was not used.
+
+Each document carries both the **route** it was sent down and the **status** it
+has reached, because those are different questions — the route is decided once
+and kept, and it stays readable after the two flows rejoin further down.
+
+The routing is reversible in both directions, and reversing it costs nothing:
+because both routes run the same pipeline, a document that changes route keeps
+its transcription, its extraction and everything else already paid for. The
+document page can put one onto the Existing invoice route; the Existing invoices
+queue can send one back the other way.
+
+**The route says what is written on the page, not what is in Clear Books**, and
+those are different facts. A document with no number can still be an invoice
+Clear Books already holds — see *Is this one Clear Books already has?* below,
+which is the check on the New invoice arm.
 
 ---
 
+## Linking an existing invoice
+
+A document on the **Existing invoice** route is a scan of something already in
+Clear Books. Nothing is posted for it. The job is to find the record its
+handwritten number names and put the PDF on that record, so the accounts hold
+the evidence rather than a reference to a filing cabinet.
+
+InvoGrid does that on its own when it can, and asks a person when it cannot.
+
+### It is read and extracted like everything else
+
+**Both routes run exactly the same pipeline** — rendered, transcribed,
+extracted, matched. A scan of an existing invoice is still a document you will
+search for, filter by supplier and report on next year, so it gets the same
+supplier, dates, line items and custom fields as any other, stored in the same
+places.
+
+The only difference is the very last step, where the New Invoice route creates a
+record in Clear Books and this one matches one that is already there. That is
+also why every later change to extraction applies to both routes without anybody
+having to remember.
+
+### How the number is matched
+
+Against **InvoGrid's own copy of Clear Books' purchase documents**, which the
+invoice sync keeps up to date — see *The third cron job* above. Clear Books has
+no search endpoint for purchase documents, so a lookup against the API would
+mean walking the whole ledger once per scan.
+
+The number written in red pen is digits; Clear Books' own document number may be
+`PUR0080421`. So the comparison is made twice — exactly as written, then on the
+digits alone with leading zeros dropped — and `80421` finds `PUR0080421`. That
+is a difference in spelling, not a loosening: `80421` and `80422` remain two
+different numbers.
+
+**If two records answer to the same number, nothing is linked.** Picking one
+would be a coin toss, and losing it means this document's PDF ends up on
+somebody else's invoice.
+
+### The checksum, which is exact
+
+Finding a record is not enough on its own: a single misread digit lands on a
+real invoice belonging to a different supplier in a different month. So the
+extraction is checked against the record, on two values:
+
+| | Must be |
+|---|---|
+| **Invoice date** | the same day as the record's date |
+| **Gross total** | the same figure as the record's total, to the penny |
+
+**Both have to agree exactly, and there is no tolerance on either.** If they do,
+the PDF is attached and nobody is asked. If either does not — even by a day, or
+by a penny — the document goes to the **Existing invoices** queue for a person
+to look at.
+
+That is a deliberate trade, and it is worth being clear about which way it cuts.
+Clear Books records are typed in by hand, so a date really is often the day the
+bill was keyed in rather than the day it was issued, and a total really is
+sometimes rounded. Those documents will land in the queue, and clearing one
+takes about ten seconds. The alternative — a tolerance wide enough to absorb
+them — is a licence to file a scan against the wrong invoice with nobody
+watching, and that mistake is found during an audit, if at all.
+
+Two things that look like tolerances and are not:
+
+- the total is compared **without its sign**, because Clear Books stores a credit
+  note negative and a page never prints a minus sign. The figure itself still
+  has to be identical;
+- amounts are compared as whole pence rather than as decimals, so floating-point
+  noise cannot decide a match.
+
+### Nothing on the Clear Books record is changed
+
+The **only** call this route makes to Clear Books is the attachment. The record
+was entered by a person and is not InvoGrid's to edit — if the page and the
+ledger disagree about something, that is for a person to settle in Clear Books.
+Everything InvoGrid extracted is stored in InvoGrid.
+
+### What a linked document looks like
+
+The PDF is attached to the Clear Books record, the document reaches
+**Submitted**, and its **Flow** still reads *Existing invoice* — which is how
+you tell one apart from a bill InvoGrid created. It carries the same **Open in
+Clear Books** link a submitted document does, which is where a project code is
+set by hand, and the Clear Books id and document number appear in its custom
+fields exactly as they do after a submission.
+
+The supplier and the document type are taken from the matched record. That is
+the accounts speaking rather than a model reading a scan, so it is the better
+answer of the two.
+
+The number read off the page is **never overwritten**, including when somebody
+corrects it. It is the record of what the model saw, and a value quietly
+replaced is a misreading nobody would ever notice.
+
+### When it cannot decide: the Existing invoices queue
+
+Anything the match does not settle waits at **Needs linking**, on its own screen
+at **Existing invoices** in the menu. Nothing there resolves itself. Each row
+shows the Clearbooks Number, the extracted date and total, and why it stopped —
+usually one of:
+
+- **matches nothing** — very often the record was entered in Clear Books after
+  the last invoice sync ran;
+- **matches two records** — both are listed;
+- **the date or the total does not agree** — the record's value and the
+  extracted value are shown side by side.
+
+Three things can be done about it, and no more:
+
+1. **Link it.** The field arrives holding the number read off the page. Correct
+   a misread digit, or leave it alone and press the button to look the same
+   number up again — the sync may have caught up since. If the record is right
+   but the checksum does not hold, you may link it anyway: you have the scan and
+   the record in front of you, which is more than the checksum has, and what you
+   overrode is recorded against the document.
+2. **Post it as a new invoice.** The number was not a Clear Books reference — a
+   stock code, a purchase order, somebody else's number. Nothing is re-read or
+   re-extracted: the document keeps everything it has and goes straight to the
+   ordinary review queue to be posted as a new bill.
+3. **Delete it.** For a duplicate scan or a page that is nobody's. **This cannot
+   be undone** — the document, its transcription, everything extracted from it,
+   its page images and the stored PDF are all removed. A reason is required, and
+   the activity log keeps it after the document itself has gone.
+
+Reviewers and administrators can do all three. If you would rather deleting were
+an administrator's job, move `documents.delete` from the reviewer list to the
+admin list in `src/Core/Auth.php`; nothing else has to change.
+
+---
+
+
+---
+
+## Is this one Clear Books already has?
+
+The fork above turns on somebody having written a number on the page. That is a
+fact about the page, not about the ledger — and an invoice already in Clear
+Books very often carries no number at all. It was keyed in by hand months ago
+and nobody printed it; or a colleague scanned it once before, under a different
+image, and this is the second copy.
+
+Such a document takes the New Invoice route from end to end, is extracted and
+matched perfectly well, and arrives at the review queue looking exactly like a
+bill nobody has posted — with a submit button on it. Submitting it puts the same
+purchase into the accounts twice, and that is found by a payment run rather than
+by anything in here.
+
+So every New Invoice document is compared against InvoGrid's synced copy of
+Clear Books before it can be submitted.
+
+### What is compared
+
+Four things, at the end of matching — which is where the supplier has just been
+resolved, and the supplier is one of the four:
+
+| | Compared with |
+|---|---|
+| Supplier | the Clear Books supplier the matching stage settled on |
+| Their reference | the supplier's own invoice number, case and punctuation ignored |
+| Invoice date | the same day |
+| Gross total | the same figure to the penny, sign ignored |
+
+The comparisons are the same code the Clearbooks Number checksum uses, so the
+two screens can never disagree about the same pair of records. **There are no
+tolerances**: the same day means the same day, and the same figure means to the
+penny. A value missing on either side is not an agreement — it cannot be
+confirmed, so it is not confirmed.
+
+The reference ignores case and punctuation and nothing else: `INV-2026/0042`,
+`inv 2026 0042` and `INV20260042` are one reference typed three ways, while
+`0042` and `42` stay two different references. (That last is the one place this
+differs from the Clearbooks Number, which *does* drop leading zeros — Clear
+Books writes its own numbers to a fixed width, and a supplier's reference has no
+such convention behind it.)
+
+### When a document stops
+
+**Two of the four must agree, and one of the two must be the gross total or the
+supplier's reference.**
+
+The second half is what stops the queue crying wolf. A business buys from the
+same supplier every week and receives invoices dated the same day all the time,
+so supplier-and-date is two agreements that would stop a delivery note every
+week without once being right. A recurring monthly figure on its own is one
+agreement, which is a coincidence rather than evidence.
+
+A genuine duplicate normally agrees on all four — it is literally the same
+invoice — so two is generous on purpose. The slack goes towards catching an
+extraction that misread one field, because the cost of stopping something
+wrongly is ten seconds on a comparison screen, and the cost of missing one is
+the same purchase in the accounts twice.
+
+**There is nothing to configure**, deliberately, and no threshold to turn down.
+If you do not want the check, do not run the invoice sync: a local copy nobody
+has filled matches nothing, and every document flows through as it did before.
+The Duplicates screen says so on its own face rather than reporting an empty
+queue as reassurance.
+
+### The Duplicates queue
+
+A document that stops waits at **Possible duplicate**, on its own screen at
+**Duplicates** in the menu. Nothing there resolves itself.
+
+The detail screen is one gesture: compare, then decide. InvoGrid's reading in
+one column, the Clear Books record in the next, each of the four marked agreed,
+disagreed or missing with a sentence saying why, and the scan itself underneath.
+Records that were fetched but do not clear the bar are shown below the ones that
+do — a near neighbour ruled out by eye is worth the ten seconds, and hiding them
+would leave a page headed "possible duplicate" with nothing visible to be a
+duplicate of.
+
+The comparison is re-run when the page is opened rather than read back off what
+the pipeline decided, because the invoice sync runs on a schedule and the record
+may have been edited or withdrawn since.
+
+Two things can be done about it, and no more:
+
+1. **It is genuinely new.** For a supplier who invoices the same amount every
+   month, a reference two suppliers happen to share, or a record that only looks
+   like this one. Nothing is re-read or re-extracted: the document keeps
+   everything it has and goes to the ordinary review queue, or straight to
+   **Ready to submit** if nothing else is outstanding. The decision is recorded
+   against the document, so it is never stopped for this again — editing it
+   later and having it re-matched will not send it back.
+2. **It is the same invoice.** Delete it. **This cannot be undone** — the
+   document, its transcription, everything extracted from it, its page images
+   and the stored PDF are all removed. A reason is required, and the activity
+   log keeps it, along with the Clear Books document it duplicated, after the
+   document itself has gone.
+
+**Nothing in Clear Books is touched either way.** The check makes no call at
+all — it reads InvoGrid's local copy — and deleting removes InvoGrid's copy of
+the scan, not the record. The record was entered by a person and is not
+InvoGrid's to edit.
+
+There is no third "attach the scan to that record instead", because there is
+already a way to do it: confirm the document is new, then use **Reset to →
+Finding the record** on the document page, which puts it on the Existing Invoice
+route where linking belongs.
+
+Reviewers and administrators can do both. Deleting is the same
+`documents.delete` capability the Existing invoices queue uses, so moving it to
+administrators is the same one-line change in `src/Core/Auth.php`.
+
+---
 ## Extracting the fields
 
 A document that has been read goes to **three focused calls**, not one — the
@@ -786,13 +1115,14 @@ interpolate with `{{ name }}` placeholders:
 
 | Variable | Is |
 |---|---|
-| `{{ ocrText }}` | The transcription, `### Notes` section included |
+| `{{ ocrText }}` | The transcription, and nothing but the transcription |
 | `{{ today }}` | Today, as `YYYY-MM-DD` |
-| `{{ suppliers }}` | Cached Clear Books suppliers, with both their Clear Books and Paperless ids |
+| `{{ suppliers }}` | Cached Clear Books suppliers, with their Clear Books ids |
 | `{{ accountCodes }}` | Cached purchase account codes |
 | `{{ vatRates }}` | Cached VAT rates, with their percentages |
 | `{{ vatTreatments }}` | Cached VAT treatments |
 | `{{ customFields }}` | The configured custom fields, with their hints |
+| `{{ annotations }}` | The handwritten marks found on the page, with ink colour and location |
 
 A placeholder is a **name only** — it cannot run code, unlike the n8n
 expressions it replaces. A name nothing provides is an **error at render time**,
@@ -809,11 +1139,12 @@ Every prompt is offered every variable and takes what it names, so adding
    asked for. `clearbooks_number` and `clearbooksNumber` are the same name once
    case and punctuation stop counting, so an operator can name a field however
    reads best.
-2. **From the `### Notes` section**, which states them by label.
-3. **A fourth call**, asking only about what is still unresolved.
+2. **A fourth call**, asking only about what is still unresolved — and given
+   `{{ annotations }}` alongside, since a field the first step could not answer
+   is usually one written on the page by hand.
 
-On an ordinary document steps 1 and 2 answer everything and there is no fourth
-call at all.
+On an ordinary document step 1 answers everything and there is no fourth call at
+all.
 
 ### Failing cleanly
 
@@ -917,7 +1248,6 @@ consent flow a second time also revokes whatever this instance was holding, so
 ```
 php bin/refresh-clearbooks.php                    refresh the cache
 php bin/refresh-clearbooks.php --status           what is cached, without fetching
-php bin/refresh-clearbooks.php --sync             refresh, then sync correspondents
 php bin/refresh-clearbooks.php --sync --dry-run   say what the sync would do
 ```
 
@@ -928,8 +1258,8 @@ on the treatment.
 
 Anything the refresh does not see is **deactivated, not deleted** — a document
 already matched against a supplier keeps a resolvable record, and the row's
-`paperless_correspondent_id` survives, which is the only link back to the
-correspondent that then has to be dealt with. An *archived* supplier takes
+the local knowledge held against it survives — its usual credit route, and every
+document already matched to it. An *archived* supplier takes
 exactly the same path as a deleted one; archiving is how a supplier is retired
 in practice. A refresh that returns nothing at all deactivates nothing: that is
 a failed fetch, not a business that deleted every supplier.
@@ -972,44 +1302,6 @@ A row a person resolved by hand (`matched_via = manual`) **survives a
 re-match**; everything automatic is rebuilt from scratch, because a stale
 automatic guess is worse than none.
 
-### Suppliers and Paperless correspondents
-
-Clear Books is the source of truth. A supplier there is a correspondent here.
-Nothing flows the other way — a correspondent invented in Paperless is left
-alone, because that is somebody filing a document, not somebody deciding the
-chart of suppliers.
-
-| In Clear Books | In Paperless |
-|---|---|
-| New supplier | An existing correspondent of that name is **linked** if there is one; otherwise a correspondent is created. Names are unique in Paperless, and a duplicate splits a supplier's filing in two. |
-| Renamed supplier | The correspondent is renamed. If another correspondent already holds that name the failure is logged and the two are left for a person — merging them silently is not this job's decision. |
-| Supplier gone or archived | See below. |
-
-Removal is the one that needs care, and the rule is absolute: **a correspondent
-with documents pointing at it is never deleted.** The order is count, re-point,
-count again, and only then delete. Each document is first sent to whichever
-supplier Clear Books now considers correct —
-
-- the supplier the matching stage settled on for that document, if it is still
-  current and has a correspondent; failing that,
-- an unambiguous name match of the retired supplier against the current list,
-  which is how a delete-and-recreate rename resolves.
-
-Anything else is **flagged** — a note on the Paperless document and an entry in
-the activity log — and the correspondent stays, indefinitely if need be. An
-unfiled document is a real loss to a person; a stale correspondent is
-untidiness. The note is written at most once, so a nightly cron does not paste
-the same sentence on for as long as the situation lasts.
-
-Every create, rename, delete, re-point and flag goes to `audit_log`, because
-this is the one part of InvoGrid that changes somebody else's system without a
-person pressing anything. Run `--sync --dry-run` once before the first real run.
-
-Two settings govern it: `clearbooks_sync_correspondents` turns the whole thing
-off, and `clearbooks_delete_correspondents` turns off deletion alone for an
-operator who would rather tidy up by hand. Both default on. The guard above
-holds whatever they say.
-
 ---
 
 ## The review queue
@@ -1020,16 +1312,50 @@ machinery.
 The list shows documents needing a decision **and** documents ready to submit,
 together: they are two halves of one job, and somebody who has just resolved a
 document should not have to go and find it somewhere else to finish it. Each row
-carries the supplier, type, amount, date and — the number that actually
-matters — how many things are unresolved. A document with one unmatched supplier
-is a minute's work; one with six unmatched account codes is not, and a queue
-showing only a status makes you open both to find out.
+carries the supplier, type, amount, date and — the numbers that actually
+matter — how many things are unresolved, how many are flagged, and what the
+first of them says. A document with one unmatched supplier is a minute's work;
+one with six unmatched account codes is not, and a queue showing only a status
+makes you open both to find out.
+
+There are **three queues, and each asks a different question** — which is why
+each has its own screen rather than being a tab on another:
+
+| Queue | The question |
+|---|---|
+| Review queue | Is this extraction right, and does everything on it resolve? |
+| Existing invoices | Which Clear Books record does this handwritten number point at? |
+| Duplicates | Is this invoice one Clear Books already holds, though nobody wrote a number on it? |
+
+Only the review queue ends in a submission. The other two end in a document
+either joining it or going away.
 
 ### The detail screen
 
-The scan on the left, the record on the right. The PDF is an ordinary
-authenticated route on this same origin (`/documents/{id}/pdf`) rendered in an
-`<object>`, so the browser's own viewer does the work.
+The scan on the left, the record on the right, on a layout built for a monitor:
+the content column runs to 1760px on the document-facing screens rather than the
+1200px that suits a page of prose, and past 1500px the extra width goes to the
+form, because a sheet of A4 stops getting easier to read somewhere around 700px
+and a six-column line table does not.
+
+**The scan pane shows the rendered page images, not the PDF.** Every document is
+rendered to one image per page before a model is ever shown it, so the images are
+already on disk — and they are the very images the extraction was worked out
+from, which makes them the right thing to check a doubtful reading against. An
+`<img>` paints straight away where an `<object>` boots a whole PDF viewer, with
+its own toolbar and its own idea of zoom, inside a box a third of the screen
+wide.
+
+Under the pages: arrows and a page count, an **Actual size** toggle that swaps
+fit-the-width for the image's own pixels — which is what reading a handwritten
+annotation needs — and a **View PDF** button that opens the PDF *beneath* the
+images rather than instead of them. A thumbnail strip appears past two pages.
+
+All of it works with JavaScript off: the pages are stacked in a scrolling box in
+order, the strip is ordinary in-page anchors, and View PDF is a link to
+`/documents/{id}/pdf`. The two controls that cannot work without a script — the
+arrows and the zoom toggle — are hidden until it loads, so the bar never offers a
+button that does nothing.
 
 **Every extracted value is an input** — title, description, type, reference,
 supplier label, all three dates, every line item's description, quantity, unit
@@ -1048,15 +1374,51 @@ line.
 Saving re-runs the match immediately, so a corrected account code turns green
 now rather than at the next cron tick.
 
+### What needs a look, marked on the field that needs it
+
+The screen used to carry one card at the top saying "4 things to check", above
+forty inputs, and left the reviewer to work out which four boxes were meant.
+Now each thing is drawn on the field it is about: the label carries a word —
+**must be resolved** or **check this** — the box carries a coloured edge, and
+what was actually said sits under the box.
+
+Three signals feed it, in descending order of how much they can be trusted:
+
+| Signal | Where it comes from | Tone |
+|---|---|---|
+| An unresolved entity | An `entity_matches` row that names its entity type and, for a line, its line index. Structural, so there is no guessing | red — it stands between this document and Clear Books |
+| A confidence below 1 | A match settled by the looser name pass (0.9), or a score in `extractions.confidence`, which is per-column | amber |
+| A review note | Prose a stage wrote. The only part that is a guess | amber |
+
+`App\Services\FieldIssues` does the attribution. The pipeline's own notes carry
+prefixes it parses rather than interprets — `Matching: Account code on line 2:`,
+`Line 3:`, `Document type:` — and only the free text a model wrote is read for a
+phrase that names a field, from a deliberately short list of phrases a note would
+have to go out of its way to mean something else by. **A note it cannot place is
+not attributed by guesswork**: it is listed at the top of the form, where the old
+banner was, because a reviewer sent to correct a value that was never wrong will
+trust the next mark less. That list, and an index of links to the marked fields,
+is all that is left up there.
+
+The document record at `/documents/{id}` marks the same values the same way. It
+is read-only, so the marks are all it offers — but "which of these forty values
+is the doubtful one" is the same question on both screens and must not have two
+answers, so both build the marks from the same object.
+
 ### Resolving what could not be matched
 
-Each unresolved entity gets its own card saying what was read off the document
-and why it did not match. Two ways out:
+An account code, a VAT rate or the VAT treatment is a `<select>` in the form
+itself, and saving re-runs the match — so **picking the right one there is the
+resolution**, and the marked cell is the control that fixes it.
+
+The supplier is the exception, and gets a card of its own beside the field: the
+supplier box holds the name read off the letterhead, so typing in it changes what
+the document says rather than what it points at. Two ways out:
 
 | | |
 |---|---|
-| **Use one already on file** | Offered for every entity type, and first, because it is the common case: most unmatched suppliers *are* in Clear Books, under a name the matching could not see. |
-| **Create in Clear Books** | Suppliers only. A form pre-filled from the extraction, which you check and edit before confirming. |
+| **Use one already on file** | First, because it is the common case: most unmatched suppliers *are* in Clear Books, under a name the matching could not see. |
+| **Create in Clear Books** | A form pre-filled from the extraction, which you check and edit before confirming. |
 
 **Nothing is created automatically, ever.** `EntityCreator` is the only class
 that creates anything in Clear Books, every entry point is a POST from this
@@ -1064,11 +1426,10 @@ screen, and there is no scheduled caller. What gets created is what is in the
 boxes when the button is pressed — the pre-fill is a convenience, not the
 decision.
 
-Creating a supplier also creates its Paperless correspondent and records the
-link, exactly as the nightly sync would — looking for an existing correspondent
-of that name first, because Paperless names are unique and a duplicate splits a
-supplier's filing in two. If Paperless is unreachable the supplier is still
-created and the sync picks the correspondent up later; throwing there would
+Creating a supplier caches it immediately, so the re-check that follows reads the
+record rather than trusting this step to have said so. A supplier that exists in
+Clear Books but not in the cache would leave the document unresolved with no
+explanation a person could act on; throwing there would
 discard a successful creation over a filing detail.
 
 Account codes, VAT rates and VAT treatments are **picked, not created**. VAT
@@ -1101,7 +1462,7 @@ job fired.
 3. Create the bill or purchase credit note in Clear Books.
 4. Write the `submissions` row and move the document to `submitted`.
 5. Attach the source PDF to the created record.
-6. Write back to Paperless.
+6. Record what Clear Books called it.
 
 Four comes before five and six deliberately. A crash between three and four
 would leave a bill in the accounts that InvoGrid thinks it never sent, and the
@@ -1118,6 +1479,14 @@ worse failure on purpose.
 A rejection by Clear Books is recorded too, with the payload that was sent —
 that is exactly what somebody debugging one needs, and a failure leaving no
 trace is what the table exists to prevent.
+
+**Creating the record and attaching the PDF are one action.** There is no
+separate write-back step and nothing to run afterwards: pressing submit is the
+last thing anybody does to a document. There used to be one, when the reference
+Clear Books gave a bill had to be written back into Paperless; that went with
+Paperless, and the two values it carried — the Clear Books id and document
+number — now go into custom fields on the extraction, where every other field
+value already is.
 
 ### Bills, credit notes and refunds
 
@@ -1182,40 +1551,24 @@ So:
   the pattern can write it down without waiting for a document
   (`clearbooks_cache.default_credit_route`).
 
-### What goes back to Paperless
+### What the submission records
 
-Six writes, each attempted independently so one failure does not cost the
-others:
+Two custom fields are **produced** by submitting rather than read off the page —
+the Clear Books id, and the document number Clear Books assigned. They are marked
+`source = 'submission'` and are written onto the extraction once Clear Books has
+answered, which is how they reach the document page and the printed summary.
 
-| What | Where the value comes from |
-|---|---|
-| Correspondent | the matched supplier's `paperless_correspondent_id` |
-| Title | the extraction's generated title |
-| Content | **InvoGrid's transcription, replacing Paperless's OCR** |
-| Document type | `document_types.paperless_document_type_id` |
-| Tags | the existing ones plus `paperless_processed_tag_id` |
-| Custom fields | each field's `paperless_field_id`, merged not replaced |
-| A note | Clear Books id and number, supplier, total, their reference |
+They are never offered to the extraction prompt: asking a vision model to find a
+Clear Books bill id on a supplier's invoice asks it to invent a number that does
+not exist yet, and it will oblige.
 
-Nothing is guessed: every target id is nullable, and an unset one means the
-write is skipped and said so in the warnings, never that an id is invented.
-
-Replacing `content` is on by default and switchable
-(`paperless_replace_content`). On a scanned invoice the LLM reading beats
-Paperless's own engine, and it is the only version carrying the handwritten
-annotations — which is exactly what somebody searching the archive months later
-is looking for. Overwriting a search index is still a decision an operator is
-entitled to make differently.
-
-Custom fields are **merged**. A PATCH of `custom_fields` replaces the whole
-list, so writing the Clear Books id naively would wipe every field somebody had
-set by hand.
-
-Two of those fields are produced by the submission rather than read off the
-page — the Clear Books id and the document number Clear Books assigned. They are
-marked `source = 'submission'` and are never offered to the extraction prompt:
-asking a vision model to find a Clear Books bill id on a supplier's invoice asks
-it to invent a number that does not exist yet, and it will oblige.
+This is best effort, like everything else past step four. The `submissions` row
+is the record of what happened; these are a convenience laid over it, and a
+failure here must not make a submitted document look unsubmitted. It is also
+written straight to the column rather than through `Extraction::updateFields()`,
+which stamps `edited_at` — that stamp means *a person changed this*, and a value
+the submission produced by itself must not make an untouched extraction claim it
+was edited by hand.
 
 ### Open in Clear Books
 
@@ -1272,26 +1625,7 @@ it and add another if the key is wrong.
 
 **A field is deactivated, never deleted**, for the same reason — last month's
 extraction still has to resolve what it stored. Deactivating stops it being
-offered to the prompt and stops it being written back, and nothing else.
-
-### Pairing with Paperless
-
-On the same screen: pick an existing Paperless custom field — its type and, for
-a select, its choices come across — or **create one** from what has already been
-typed in, so setting a field up does not mean opening the Paperless admin in
-another tab and coming back with an id.
-
-The Paperless field is created **first**. A failure there leaves nothing behind;
-the other order would give an InvoGrid field that silently never writes back,
-which looks like it is working right up until somebody goes looking for the
-value.
-
-A Paperless field already paired with another InvoGrid field is shown but not
-selectable — the write-back merges by Paperless field id, so two pointing at one
-would overwrite each other on every document.
-
-A field with no pairing is still read off the page; it just is not written back,
-and the screen says so.
+offered to the prompt, and nothing else.
 
 ---
 
@@ -1344,7 +1678,7 @@ safe".
   anywhere.
 - Every state-changing request carries a CSRF token, checked by middleware.
 - Third-party credentials are only ever used from PHP. The browser never talks to
-  Paperless, Clear Books, OpenAI or Anthropic directly.
+  Clear Books, OpenAI or Anthropic directly.
 - A Content-Security-Policy, `X-Content-Type-Options`, `X-Frame-Options`,
   `Referrer-Policy` and HSTS (over HTTPS) are set on every response.
 
@@ -1361,12 +1695,21 @@ line (see *Create the first administrator*); every one after that is made on
 | Role | Can |
 |---|---|
 | `viewer` | See documents, the dashboard and the review queue. Changes nothing. |
-| `reviewer` | The above, plus correct a document, resolve its entities, create a supplier in Clear Books, submit, retry a failure. |
+| `reviewer` | The above, plus correct a document, resolve its entities, create a supplier in Clear Books, submit, retry a failure, link an existing invoice, settle a possible duplicate, and **delete a document**. |
 | `admin` | The above, plus settings, branding, prompts, custom fields, accounts. |
 
 Roles are cumulative and enforced on the route, not in the template. Hiding a
 button is a courtesy; the gate is `App\Core\Auth::can()` running before the
 controller. `php tests/permissions.php` proves it — see *Verifying an install*.
+
+**Deleting is the one irreversible thing in here**, and it has its own
+capability (`documents.delete`) so that it can be moved without touching
+anything else. A reviewer holds it because it is one of the three answers the
+Existing invoices queue offers and one of the two the Duplicates queue offers,
+and a queue with a resolution its own audience cannot reach stops being worked;
+the reason field and an audit row that outlives the document are the controls.
+To make it an administrator's job, move that one string from the reviewer list
+to the admin list in `src/Core/Auth.php`.
 
 ### A password an administrator sets is a way in, not a password
 
@@ -1433,10 +1776,10 @@ php bin/console.php settings:set stuck_pipeline_minutes 30
 php bin/console.php settings:set stuck_review_days 7
 ```
 
-**`/documents`** filters by stage, document type, correspondent and date range,
+**`/documents`** filters by stage, document type, supplier and date range,
 and its search reaches into what was read off the page — supplier name, invoice
-number, title — not only what Paperless says. So a document whose correspondent
-says "Acme" but whose invoice was read as "Totally Unknown Trading Co" is
+number, title — as well as the filename it arrived under. So a document uploaded
+as `acme-jan.pdf` whose invoice was read as "Totally Unknown Trading Co" is
 findable under either.
 
 The date range is the invoice date where one has been read, and the day it
@@ -1506,30 +1849,28 @@ was set up before the installer existed still has to be understood.
 
 **The external services**
 
-11. **Paperless**: base URL and API token, then the workflow and its shared
-    secret — see *Paperless setup*.
-12. **Clear Books**: client id, secret and business id, then complete the
+11. **Clear Books**: client id, secret and business id, then complete the
     consent flow on *Settings → Clear Books*. Until that is done every cached
     list is empty and every document lands in review saying so.
-13. **A model provider**: a key for whichever of Anthropic or OpenAI you have
+12. **A model provider**: a key for whichever of Anthropic or OpenAI you have
     chosen, per stage.
-14. Pair the Paperless document types and the processed tag, on
-    **Settings → Application settings**. The document type mapping is the last
-    card on that page, against the list fetched from Paperless; the tag id is in
-    the Paperless card. From a terminal instead:
+13. Optionally raise or lower `ingest_max_upload_mb` on
+    **Settings → Incoming documents** if 25MB is the wrong ceiling for your
+    scanner. From a terminal instead:
 
     ```bash
-    php bin/console.php settings:set paperless_processed_tag_id 12
+    php bin/console.php settings:set ingest_max_upload_mb 40
     ```
 
-**The two cron jobs**
+**The three cron jobs**
 
-15. `sudo ./manage.sh cron-install` writes both, plus a nightly backup. By hand
-    it is:
+14. `sudo ./manage.sh cron-install` writes all three, plus a nightly backup. By
+    hand it is:
 
     ```
     * * * * * www-data /usr/bin/php /var/www/invogrid/bin/process-queue.php >/dev/null 2>&1
     17 * * * * www-data /usr/bin/php /var/www/invogrid/bin/refresh-clearbooks.php >/dev/null 2>&1
+    */5 * * * * www-data /usr/bin/php /var/www/invogrid/bin/sync-invoices.php >/dev/null 2>&1
     ```
 
     **Without the first one nothing is ever processed.** It is the single most

@@ -217,6 +217,27 @@ final class ClearBooksClient
         return $this->list('/accounting/vatRates/' . $this->vatType($vatType), $query);
     }
 
+    // --- Purchase documents already in Clear Books ---------------------------
+
+    /**
+     * Every purchase document of one kind, one record at a time.
+     *
+     * Read by the invoice sync, which keeps a local copy of what Clear Books
+     * already holds so that a later stage can tell whether a document has been
+     * posted before. Handed over a record at a time rather than as an array
+     * because this list has no natural ceiling — see `walkPages()`.
+     *
+     * `$purchaseType` is the API's own path segment: `bills`, `creditNotes` or
+     * `expenses`, the same vocabulary `createPurchase()` takes.
+     *
+     * @param callable(array<string,mixed>):void $onRow
+     * @return int How many records came back
+     */
+    public function eachPurchase(string $purchaseType, callable $onRow): int
+    {
+        return $this->walkPages('/accounting/purchases/' . $this->purchaseSegment($purchaseType), [], $onRow);
+    }
+
     // --- Writing ------------------------------------------------------------
 
     /**
@@ -250,6 +271,20 @@ final class ClearBooksClient
      */
     public function createPurchase(string $purchaseType, array $document): array
     {
+        return $this->send('POST', '/accounting/purchases/' . $this->purchaseSegment($purchaseType), $document);
+    }
+
+    /**
+     * The path segment for a purchase document type, checked.
+     *
+     * `document_types.clearbooks_resource` holds `purchases/bills` and the
+     * caller may pass either half, so both spellings are accepted and reduced
+     * to the one the API wants. Anything else is refused here rather than sent:
+     * this value becomes a URL path, and a typo would otherwise arrive as a 404
+     * from Clear Books with no clue as to which of ours produced it.
+     */
+    private function purchaseSegment(string $purchaseType): string
+    {
         $allowed = ['bills', 'creditNotes', 'expenses'];
         $type    = ltrim(str_replace('purchases/', '', trim($purchaseType)), '/');
 
@@ -260,7 +295,7 @@ final class ClearBooksClient
             );
         }
 
-        return $this->send('POST', '/accounting/purchases/' . $type, $document);
+        return $type;
     }
 
     /** @param array<string,mixed> $document @return array<string,mixed> */
@@ -299,7 +334,7 @@ final class ClearBooksClient
         // A name is a path segment here, so anything that could climb out of it
         // is removed rather than escaped.
         $safeName = preg_replace('/[^A-Za-z0-9._-]+/', '-', basename($fileName)) ?: 'attachment.pdf';
-        $type     = ltrim(str_replace('purchases/', '', trim($purchaseType)), '/');
+        $type     = $this->purchaseSegment($purchaseType);
 
         $response = $this->request(
             'POST',
@@ -356,7 +391,7 @@ final class ClearBooksClient
     // --- Plumbing -----------------------------------------------------------
 
     /**
-     * Walk every page of a paginated list.
+     * Walk every page of a paginated list, handing each record to a callback.
      *
      * The walk stops when the current page equals the total, which is what the
      * API tells us directly — rather than "keep going until a short page",
@@ -365,13 +400,21 @@ final class ClearBooksClient
      * page is the whole answer. The bound is belt and braces against a server
      * that keeps claiming there is more.
      *
+     * A callback rather than a returned array, because the purchase-document
+     * lists are unbounded in a way the reference lists are not: a business with
+     * ten years of history has tens of thousands of bills, each carrying its
+     * line items, and accumulating all of them before the first is written is
+     * how a cron job runs a server out of memory. `allPages()` is the same walk
+     * with the array collected for callers that genuinely want one.
+     *
      * @param array<string,scalar|null> $query
-     * @return array<int,array<string,mixed>>
+     * @param callable(array<string,mixed>):void $onRow
+     * @return int How many records were handed over
      */
-    private function allPages(string $path, array $query = []): array
+    private function walkPages(string $path, array $query, callable $onRow): int
     {
-        $results = [];
-        $page    = 1;
+        $seen = 0;
+        $page = 1;
 
         do {
             $response = $this->request('GET', $path, $query + ['page' => $page, 'limit' => self::PAGE_LIMIT]);
@@ -379,7 +422,8 @@ final class ClearBooksClient
 
             foreach ($decoded as $row) {
                 if (is_array($row)) {
-                    $results[] = $row;
+                    $seen++;
+                    $onRow($row);
                 }
             }
 
@@ -389,6 +433,23 @@ final class ClearBooksClient
             $more = $current !== null && $total !== null && (int) $current < (int) $total;
             $page++;
         } while ($more && $page <= 500);
+
+        return $seen;
+    }
+
+    /**
+     * Every page of a paginated list, collected.
+     *
+     * @param array<string,scalar|null> $query
+     * @return array<int,array<string,mixed>>
+     */
+    private function allPages(string $path, array $query = []): array
+    {
+        $results = [];
+
+        $this->walkPages($path, $query, static function (array $row) use (&$results): void {
+            $results[] = $row;
+        });
 
         return $results;
     }

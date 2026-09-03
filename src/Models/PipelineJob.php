@@ -9,9 +9,9 @@ use App\Core\Database;
 /**
  * The work queue.
  *
- * The webhook receiver has five seconds to answer — that is Paperless's own
- * timeout, not a guess — and downloading a scan takes longer than that on a bad
- * day. So the receiver writes a row here and returns; `bin/process-queue.php`
+ * An upload has to answer while somebody is watching the page, and reading a
+ * scanned invoice takes tens of seconds. So the ingest route writes a row here
+ * and returns immediately; `bin/process-queue.php`
  * does the work a moment later.
  *
  * Claiming is done inside a transaction with `FOR UPDATE SKIP LOCKED`, so two
@@ -37,9 +37,9 @@ final class PipelineJob
     /**
      * Queue a stage for a document.
      *
-     * Idempotent by (document, stage): a webhook delivered three times, or a
-     * retry pressed twice, leaves one job. Without this the same document would
-     * be downloaded once per delivery.
+     * Idempotent by (document, stage): the same file uploaded twice in a batch,
+     * or a retry pressed twice, leaves one job. Without this the same document
+     * would be read — and paid for — once per attempt to queue it.
      */
     public static function enqueue(int $documentId, string $stage, int $delaySeconds = 0): int
     {
@@ -122,12 +122,13 @@ final class PipelineJob
      * Record a failure, and put the job back for another go unless it has had
      * enough.
      *
-     * The delay grows with each attempt — 1, 2, 4, 8 minutes — so a Paperless
-     * that is down for a restart is waited out rather than hammered.
+     * The delay grows with each attempt — 1, 2, 4, 8 minutes — so a model
+     * provider that is rate-limiting or briefly down is waited out rather than
+     * hammered.
      *
      * @param bool $permanent Some failures will never come right on their own:
-     *                        a document deleted in Paperless, a PDF that is not
-     *                        a PDF. Retrying those is noise.
+     *                        a PDF that is not a PDF, an API key that has been
+     *                        revoked. Retrying those is noise.
      */
     public static function fail(
         int $jobId,

@@ -80,7 +80,7 @@ final class Doctor
          * `openssl` is not a nice-to-have: it is what encrypts every stored API
          * token, and without it Setting::put() refuses to save one rather than
          * writing it to the database in the clear. An install missing it looks
-         * like "the Paperless token will not save" with no reason given.
+         * like "the Clear Books secret will not save" with no reason given.
          */
         $required = [
             'pdo_mysql' => 'Talking to MariaDB at all.',
@@ -134,7 +134,7 @@ final class Doctor
             'label'  => 'APP_URL',
             'status' => $url === '' ? self::WARN : self::OK,
             'detail' => $url === '' ? 'not set' : $url,
-            'hint'   => 'Used to build the Clear Books redirect URI and the links in Paperless notes.',
+            'hint'   => 'Used to build the Clear Books redirect URI and every absolute link InvoGrid writes.',
         ];
 
         $https = (bool) Config::get('security.force_https', true);
@@ -145,7 +145,7 @@ final class Doctor
             'status' => $https ? self::OK : self::WARN,
             'detail' => $https ? 'yes' : 'no — FORCE_HTTPS is false',
             'hint'   => 'Off is correct for local development and wrong anywhere else: '
-                . 'passwords and the webhook secret cross the network in the clear.',
+                . 'passwords and session cookies cross the network in the clear.',
         ];
 
         return $rows;
@@ -280,16 +280,13 @@ final class Doctor
     public static function integrations(): array
     {
         $checks = [
-            [
-                'label' => 'Paperless address and API token',
-                'done'  => Setting::isConfigured('paperless_base_url') && Setting::isConfigured('paperless_token'),
-                'hint'  => 'Needed to pull document metadata and the source PDF.',
-            ],
-            [
-                'label' => 'Webhook shared secret',
-                'done'  => Setting::isConfigured('paperless_webhook_secret'),
-                'hint'  => 'The Paperless workflow presents this; anything else is rejected.',
-            ],
+            /*
+             * No "documents can get in" check, and there does not need to be
+             * one: the upload page is built in and works the moment somebody
+             * with `documents.upload` signs in. There is nothing to configure
+             * and so nothing that can be left unconfigured — which is most of
+             * the point of native ingest.
+             */
             [
                 'label' => 'Clear Books OAuth2 credentials and business id',
                 'done'  => Setting::isConfigured('clearbooks_client_id')

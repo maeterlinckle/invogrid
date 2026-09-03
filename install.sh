@@ -51,7 +51,6 @@ DRY_RUN=no
 ASSUME_YES=no
 ANSWERS_FILE=""
 
-WEBHOOK_SECRET=""
 
 if [ -t 1 ] && [ -z "${NO_COLOR:-}" ]; then
     C_RESET=$'\033[0m'; C_BOLD=$'\033[1m'; C_DIM=$'\033[2m'
@@ -973,28 +972,14 @@ else
 fi
 
 # ---------------------------------------------------------------------------
-# 16. The webhook secret
-# ---------------------------------------------------------------------------
-step "Generating the Paperless webhook secret"
-
-WEBHOOK_SECRET="$(php_app bin/console.php secret:generate 2>/dev/null | tr -d '\r\n' || true)"
-
-if [ -n "$WEBHOOK_SECRET" ]; then
-    printf '%s\n' "$WEBHOOK_SECRET" | php_app bin/console.php settings:set paperless_webhook_secret >/dev/null 2>&1 \
-        && ok "Stored" \
-        || { warn "Could not store it — set one later with:  sudo $INSTALL_DIR/manage.sh webhook-secret"; WEBHOOK_SECRET=""; }
-else
-    warn "Could not generate one — do it later with:  sudo $INSTALL_DIR/manage.sh webhook-secret"
-fi
-
-# ---------------------------------------------------------------------------
-# 17. Cron
+# 16. Cron
 # ---------------------------------------------------------------------------
 if [ -z "$INSTALL_CRON" ] && [ "$NON_INTERACTIVE" != yes ]; then
     say ""
-    say "  InvoGrid needs two cron entries to work at all:"
+    say "  InvoGrid needs three cron entries to work at all:"
     say "    - the queue worker, every minute — without it nothing is ever processed"
     say "    - the Clear Books cache refresh, hourly"
+    say "    - the invoice sync, every five minutes (it fetches on its own schedule)"
     say "  and a nightly backup."
     say ""
     confirm "Install them?" && INSTALL_CRON=yes || INSTALL_CRON=no
@@ -1006,7 +991,7 @@ if [ "$INSTALL_CRON" = yes ]; then
 fi
 
 # ---------------------------------------------------------------------------
-# 18. A convenience command
+# 17. A convenience command
 # ---------------------------------------------------------------------------
 if [ -d /usr/local/bin ]; then
     ln -sf "$INSTALL_DIR/manage.sh" /usr/local/bin/invogrid
@@ -1014,7 +999,7 @@ if [ -d /usr/local/bin ]; then
 fi
 
 # ---------------------------------------------------------------------------
-# 19. Check it over
+# 18. Check it over
 # ---------------------------------------------------------------------------
 step "Checking it over"
 php_app bin/console.php doctor || true
@@ -1039,24 +1024,13 @@ if [ "$DB_PASSWORD_GENERATED" = yes ]; then
     say ""
 fi
 
-if [ -n "$WEBHOOK_SECRET" ]; then
-    printf '  %sThe Paperless webhook secret — this is the only time it is shown:%s\n' "$C_BOLD" "$C_RESET"
-    say ""
-    say "      ${WEBHOOK_SECRET}"
-    say ""
-    say "  In Paperless: Manage → Workflows → a workflow on Document Added, with a"
-    say "  webhook action pointing at"
-    say ""
-    say "      ${APP_URL}/webhook/paperless"
-    say ""
-    say "  sending the header"
-    say ""
-    say "      X-InvoGrid-Secret: ${WEBHOOK_SECRET}"
-    say ""
-    say "  and the body {\"id\": {{doc_id}}} as application/json."
-    say "  Anything presenting a different secret is rejected."
-    say ""
-fi
+say "  To put a document in: sign in, then Upload. PDFs only."
+say ""
+say "      /documents/upload"
+say ""
+say "  The queue processes it in the background — the cron entry above is what"
+say "  actually moves a document past 'Received'."
+say ""
 
 case "$TLS_MODE" in
     proxy)
@@ -1066,9 +1040,9 @@ case "$TLS_MODE" in
         say ""
         ;;
     plain-http)
-        say "  ${C_BOLD}There is no TLS on this install.${C_RESET} Passwords and the webhook"
-        say "  secret cross the network in the clear. Put it behind a proxy or add a"
-        say "  certificate before it leaves the LAN."
+        say "  ${C_BOLD}There is no TLS on this install.${C_RESET} Passwords, session"
+        say "  cookies and uploaded invoices cross the network in the clear. Put it"
+        say "  behind a proxy or add a certificate before it leaves the LAN."
         say ""
         ;;
 esac
@@ -1077,12 +1051,10 @@ say "  Next, in the web interface:"
 say "    1. Settings → Clear Books — the client id, secret and business id, then"
 say "       complete the consent flow. Until that is done every cached list is"
 say "       empty and every document lands in review saying so."
-say "    2. Settings (command line for now) — the Paperless address and API token:"
-say "         sudo invogrid set-setting paperless_base_url"
-say "         sudo invogrid set-setting paperless_token"
-say "    3. An LLM key for whichever provider you have chosen:"
+say "    2. An LLM key for whichever provider you have chosen:"
 say "         sudo invogrid set-setting anthropic_api_key"
-say "    4. Settings → Branding — your logo, light and dark."
+say "    3. Settings → Branding — your logo, light and dark."
+say "    4. Documents → Upload — put a PDF in and watch it go through."
 say ""
 say "  Day-to-day:"
 say "    sudo invogrid status"

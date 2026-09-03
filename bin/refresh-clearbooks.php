@@ -3,23 +3,17 @@
 declare(strict_types=1);
 
 /*
- * Refresh the cached Clear Books lists, and optionally mirror suppliers into
- * Paperless correspondents.
+ * Refresh the cached Clear Books lists — the suppliers, account codes and VAT
+ * rates every extraction prompt is built from.
  *
  *   # every twelve hours: the lists the extraction prompts are built from
  *   0 0,12 * * *  www-data /usr/bin/php /var/www/invogrid/bin/refresh-clearbooks.php >/dev/null 2>&1
  *
- *   # once a day, after a refresh: correspondents follow suppliers
- *   30 3 * * *   www-data /usr/bin/php /var/www/invogrid/bin/refresh-clearbooks.php --sync >/dev/null 2>&1
- *
  *   php bin/refresh-clearbooks.php             refresh the cache
- *   php bin/refresh-clearbooks.php --sync      refresh, then sync correspondents
- *   php bin/refresh-clearbooks.php --sync --dry-run   say what the sync would do
  *   php bin/refresh-clearbooks.php --status    what is cached, without fetching
  *
- * `--dry-run` exists because the sync is the one part of InvoGrid that changes
- * somebody else's system without a person pressing anything. Run it once before
- * the first real run.
+ * This reads from Clear Books and writes only to InvoGrid's own cache. Nothing
+ * here changes anybody else's system, which is why there is no dry run.
  *
  * Same shape as bin/process-queue.php on purpose: cron rather than a daemon,
  * and a lock file rather than the hope that a run finishes before the next one
@@ -39,16 +33,12 @@ use App\Core\Config;
 use App\Models\ClearbooksCache;
 use App\Services\CacheRefresh;
 use App\Services\ClearBooksClient;
-use App\Services\SupplierSync;
 
 /** @param array<int,string> $argv */
 function flag(array $argv, string $name): bool
 {
     return in_array('--' . $name, $argv, true);
 }
-
-$dryRun = flag($argv, 'dry-run');
-$sync   = flag($argv, 'sync');
 
 // --- What is cached -------------------------------------------------------
 
@@ -116,12 +106,6 @@ $status = 0;
 try {
     echo "Refreshing the Clear Books cache...\n";
     CacheRefresh::run($say);
-
-    if ($sync) {
-        echo ($dryRun ? "\nCorrespondent sync (dry run — nothing will be changed)...\n" : "\nSyncing Paperless correspondents...\n");
-        $tally = SupplierSync::run($dryRun, $say);
-        echo '  ' . SupplierSync::describe($tally), "\n";
-    }
 
     printf("\nDone in %.1fs\n", microtime(true) - $started);
 } catch (Throwable $e) {

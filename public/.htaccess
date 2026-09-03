@@ -5,9 +5,8 @@
     RewriteEngine On
 
     # Redirect to HTTPS when the reverse proxy tells us the request arrived over
-    # plain HTTP. Harmless when TLS terminates here instead. /health and the
-    # webhook receiver are exempt from the host check only in that localhost is
-    # left alone, so a container health probe still works.
+    # plain HTTP. Harmless when TLS terminates here instead. /health and localhost
+    # are left alone, so a container health probe still works.
     RewriteCond %{HTTPS} !=on
     RewriteCond %{HTTP:X-Forwarded-Proto} !=https
     RewriteCond %{HTTP_HOST} !^localhost [NC]

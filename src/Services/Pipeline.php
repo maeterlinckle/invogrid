@@ -16,8 +16,8 @@ use Throwable;
  * The stage runner.
  *
  * One place that knows which stage follows which status, so adding a stage in a
- * later prompt is a row in `STAGES` plus a handler — not a change to the
- * webhook receiver, the queue, the retry action and the document page.
+ * later prompt is a row in `STAGES` plus a handler — not a change to the ingest
+ * routes, the queue, the retry action and the document page.
  *
  * A stage handler is given the document row and returns the status the document
  * should move to. It may throw; the runner records the failure, backs the job
@@ -49,9 +49,14 @@ final class Pipeline
             'from'    => Document::RECEIVED,
             'during'  => null,
             'to'      => Document::OCR_PENDING,
-            'label'   => 'Fetch from Paperless',
+            'label'   => 'Accept the document',
             'handler' => IngestStage::class,
         ],
+        // One outcome now. The OCR stage still decides which flow a document is
+        // on — it is the stage that reads the handwritten Clearbooks Number —
+        // but it records that on `documents.route` and lets every document take
+        // the same next step. Both flows run the whole pipeline; they part
+        // company at `match`, below.
         'ocr' => [
             'from'    => Document::OCR_PENDING,
             'during'  => null,
@@ -66,10 +71,15 @@ final class Pipeline
             'label'   => 'Extract the fields',
             'handler' => ExtractStage::class,
         ],
-        // `to` is the conservative outcome, not the only one. MatchStage
-        // returns `ready_to_submit` when every entity resolved and nothing was
-        // flagged; the registry records the destination a document reaches when
-        // it needs a person, because that is the one the retry action and the
+        // **Three outcomes, and this is where the two flows part.** `to` is the
+        // conservative one: a New Invoice document reaches `needs_review` when
+        // anything is unresolved, `ready_to_submit` when nothing is, and an
+        // Existing Invoice document goes to `existing_invoice` whatever the
+        // entities did — nothing is being created there, so the things that
+        // gate a submission do not gate a link.
+        //
+        // The registry records the destination a document reaches when it needs
+        // a person, because that is the one the retry action and the
         // state-machine consistency check have to be right about.
         'match' => [
             'from'    => Document::EXTRACTED,
@@ -78,18 +88,53 @@ final class Pipeline
             'label'   => 'Match against Clear Books',
             'handler' => MatchStage::class,
         ],
+        // The Existing Invoice route's last step, and the counterpart of the
+        // submission a New Invoice document ends with. `to` is the conservative
+        // outcome again: `needs_link` whenever the Clearbooks Number does not
+        // settle on exactly one record whose date and total agree exactly, and
+        // `submitted` when it does.
+        //
+        // `existing_invoice` is what this consumes, so a document that fails
+        // here retries from there and looks the number up again — which is
+        // exactly what somebody pressing retry after a sync means by it.
+        'link' => [
+            'from'    => Document::EXISTING_INVOICE,
+            'during'  => null,
+            'to'      => Document::NEEDS_LINK,
+            'label'   => 'Find the Clear Books record',
+            'handler' => LinkStage::class,
+        ],
     ];
 
     /**
      * The stage that acts on a document in this status, or null when nothing
      * does — either because the document is waiting on a person, or because the
      * stage has not been built yet.
+     *
+     * **A `during` status answers as well as a `from` status**, and the reason
+     * is the rule stated above: a stage that has a `during` status accepts a
+     * document back in either one, because a worker killed mid-extraction
+     * leaves the document in `extracting` and the released job has to pick it
+     * up. Left out, `advance()` returns null for `extracting` and `matching`,
+     * so the document page's "Reset to" control — which offers every status the
+     * state machine allows — could move a document to one of them and queue
+     * nothing, stranding it there until the dashboard's stuck list noticed.
+     *
+     * That was reachable before this mattered much; `possible_duplicate` made
+     * it matter, because `matching` is the only thing it can move on to (§34)
+     * and was therefore the only option on that document's dropdown.
+     *
+     * `from` is checked first, and both passes are complete before the other
+     * begins: a status that is one stage's `during` must not shadow another
+     * stage's `from`, and `tests/smoke.php` asserts no status is both.
      */
     public static function stageFor(string $status): ?string
     {
-        foreach (self::STAGES as $key => $stage) {
-            if ($stage['from'] === $status) {
-                return $stage['handler'] === null ? null : $key;
+        foreach (['from', 'during'] as $field) {
+            foreach (self::STAGES as $key => $stage) {
+                if (($stage[$field] ?? null) === $status) {
+                    return $stage['handler'] === null ? null : $key;
+                }
             }
         }
 
@@ -289,18 +334,20 @@ final class Pipeline
      * interruption. The exceptions are the ones where trying again every minute
      * for four attempts achieves nothing but noise:
      *
-     *  - the document has been deleted in Paperless;
      *  - a provider said no in a way that a second identical request will not
      *    change — a rejected API key, a model id that does not exist, an image
      *    it will not accept. `LlmException` carries that judgement itself,
      *    because only the client that made the call can tell a 429 from a 401.
+     *
+     * Note what is deliberately *not* here: a document whose stored PDF is
+     * missing or unreadable. That looks permanent and often is not — a watched
+     * directory can hand over a file another process is still writing, and the
+     * next attempt a minute later finds a whole document. Four retries and then
+     * a visible failure is the right answer to that; refusing to try again is
+     * not.
      */
     private static function isPermanent(Throwable $e): bool
     {
-        if ($e instanceof PaperlessNotFoundException) {
-            return true;
-        }
-
         if ($e instanceof LlmException) {
             return !$e->retryable;
         }
@@ -328,7 +375,7 @@ final class Pipeline
         $limit = max(1, min(200, $limit));
 
         return Database::select(
-            'SELECT j.*, d.paperless_doc_id
+            'SELECT j.*, d.original_filename
                FROM pipeline_jobs j
                JOIN documents d ON d.id = j.document_id
               WHERE j.status IN (?, ?)

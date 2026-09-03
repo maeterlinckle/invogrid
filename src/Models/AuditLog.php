@@ -59,11 +59,12 @@ final class AuditLog
         $limit  = max(1, min(200, $limit));
         $offset = max(0, $offset);
 
-        // The Paperless id travels with the row so a line about a document can
-        // name it. A left join, because a document deleted since leaves the
-        // audit row behind deliberately — the log outlives what it describes.
+        // The document's ingest details travel with the row so a line about a
+        // document can name the file it arrived as. A left join, because a
+        // document deleted since leaves the audit row behind deliberately —
+        // the log outlives what it describes.
         return Database::select(
-            'SELECT a.*, u.username, u.display_name, d.paperless_doc_id
+            'SELECT a.*, u.username, u.display_name, d.original_filename, d.ingest_source
                FROM audit_log a
                LEFT JOIN users u ON u.id = a.user_id
                LEFT JOIN documents d ON d.id = a.document_id'
@@ -170,12 +171,11 @@ final class AuditLog
 
         $q = trim((string) ($filters['q'] ?? ''));
         if ($q !== '') {
-            // A bare number is read as a Paperless id first, because that is
-            // what somebody holding a piece of paper actually has. It still
-            // matches the text, so a reference that happens to be numeric is
-            // not lost.
+            // A bare number is read as a document id first, because that is what
+            // somebody holding a printed summary actually has. It still matches
+            // the text, so a reference that happens to be numeric is not lost.
             if (ctype_digit($q)) {
-                $conditions[] = '(d.paperless_doc_id = ? OR a.details LIKE ?)';
+                $conditions[] = '(a.document_id = ? OR a.details LIKE ?)';
                 $params[]     = (int) $q;
                 $params[]     = '%' . $q . '%';
             } else {

@@ -237,3 +237,76 @@ if (!function_exists('str_limit')) {
         return mb_strlen($value) <= $length ? $value : mb_substr($value, 0, $length - 1) . '…';
     }
 }
+
+/*
+ * Marking one field as needing a look.
+ *
+ * `App\Services\FieldIssues` works out *which* field each review note,
+ * unresolved match and uncertain reading belongs to; these three draw the
+ * result. They are here rather than as closures in the review template because
+ * the document record and the printable summary mark the same fields the same
+ * way, and three copies of "which class means danger" is three chances for one
+ * screen to start telling a reviewer something different from the others.
+ *
+ * They take the *tone* rather than the FieldIssues object so that a template
+ * marking a cell it has already asked about does not ask twice.
+ */
+
+if (!function_exists('flag_class')) {
+    /**
+     * The classes that mark a field, table cell or row.
+     *
+     * Returns a string that begins with a space, so it can be dropped straight
+     * into an existing `class="…"` without the caller thinking about it.
+     */
+    function flag_class(?string $tone): string
+    {
+        if ($tone === null) {
+            return '';
+        }
+
+        return ' is-flagged' . ($tone === App\Services\FieldIssues::DANGER ? ' is-flagged-danger' : '');
+    }
+}
+
+if (!function_exists('flag_tag')) {
+    /**
+     * The word beside a flagged field's label.
+     *
+     * A word and not only a colour: colour alone is not a signal every reader
+     * receives, and telling people which fields to look at is the entire point
+     * of the mark.
+     */
+    function flag_tag(?string $tone): string
+    {
+        if ($tone === null) {
+            return '';
+        }
+
+        return '<span class="flag-tag">'
+            . ($tone === App\Services\FieldIssues::DANGER ? 'must be resolved' : 'check this')
+            . '</span>';
+    }
+}
+
+if (!function_exists('flag_notes')) {
+    /**
+     * What is actually wrong, under the field it is wrong with.
+     *
+     * @param array<int,array{tone:string,text:string}> $issues
+     */
+    function flag_notes(array $issues): string
+    {
+        if ($issues === []) {
+            return '';
+        }
+
+        $html = '<ul class="flag-notes">';
+
+        foreach ($issues as $issue) {
+            $html .= '<li><span>' . e($issue['text']) . '</span></li>';
+        }
+
+        return $html . '</ul>';
+    }
+}

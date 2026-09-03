@@ -12,9 +12,10 @@ use RuntimeException;
  * "Clearbooks Number", a circled project code.
  *
  * Data rather than code: adding one is a row here plus a line of prompt hint,
- * and the extraction stage picks it up on the next document. `data_type`
- * mirrors Paperless's own custom-field types so a value maps straight onto the
- * Paperless field it is paired with.
+ * and the extraction stage picks it up on the next document. `data_type` is
+ * what tells `coerce()` how to read the answer a model gives back â a date as a
+ * date, a total as a number â so a field's type is a promise about its values
+ * rather than a display hint.
  */
 final class CustomField
 {
@@ -27,8 +28,8 @@ final class CustomField
      * The two origins must not be confused. An `extracted` field is read off
      * the scanned page and is offered to the extraction prompt; a `submission`
      * field is **produced** by the submission — the Clear Books bill id, the
-     * document number Clear Books assigned — and written into Paperless
-     * afterwards.
+     * document number Clear Books assigned — and written onto the extraction
+     * once Clear Books has answered.
      *
      * Handing a submission field to a vision model asks it to find a number
      * that does not exist until InvoGrid creates the record, and it will
@@ -61,7 +62,7 @@ final class CustomField
     }
 
     /**
-     * The fields the submission fills in and the write-back sends to Paperless.
+     * The fields the submission fills in once Clear Books has answered.
      *
      * @return array<int,array<string,mixed>>
      */
@@ -73,10 +74,9 @@ final class CustomField
     /**
      * Every data type a field may have.
      *
-     * Mirrors Paperless's own list so a value maps straight onto the field it
-     * is paired with — except `longtext`, which is InvoGrid's and becomes a
-     * Paperless `string` when one is created. Keeping the two lists close is
-     * what lets `coerce()` be the only place a value is converted.
+     * A deliberately short list. Each entry is a rule `coerce()` knows how to
+     * apply, so adding one here without teaching `coerce()` about it would give
+     * a field a type that silently does nothing.
      *
      * @var array<string,string>
      */
@@ -211,27 +211,25 @@ final class CustomField
             throw new RuntimeException('A "one of a list" field needs at least one choice.');
         }
 
-        $paperlessId = $fields['paperless_field_id'] ?? null;
-        $hint        = trim((string) ($fields['prompt_hint'] ?? ''));
+        $hint = trim((string) ($fields['prompt_hint'] ?? ''));
 
         return [
-            'label'              => mb_substr($label, 0, 120),
-            'data_type'          => $type,
-            'select_options'     => $options === null ? null : json_encode($options, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE),
-            'paperless_field_id' => $paperlessId === null || $paperlessId === '' ? null : (int) $paperlessId,
-            'prompt_hint'        => $hint === '' ? null : $hint,
-            'active'             => !empty($fields['active']) ? 1 : 0,
-            'source'             => (string) ($fields['source'] ?? self::EXTRACTED),
+            'label'          => mb_substr($label, 0, 120),
+            'data_type'      => $type,
+            'select_options' => $options === null ? null : json_encode($options, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE),
+            'prompt_hint'    => $hint === '' ? null : $hint,
+            'active'         => !empty($fields['active']) ? 1 : 0,
+            'source'         => (string) ($fields['source'] ?? self::EXTRACTED),
         ];
     }
 
     /**
-     * Select choices, in the shape Paperless holds them.
+     * Select choices, as `[{id, label}]`.
      *
-     * `[{id, label}]` — the same structure Paperless returns and accepts, so a
-     * value chosen here writes back without translation. Accepts either that
-     * structure (importing an existing Paperless field) or one label per line
-     * (somebody typing a new list).
+     * An id distinct from the label so a choice can be renamed without
+     * orphaning every document already stored against it. Accepts either that
+     * structure or one label per line, which is what somebody typing a new
+     * list actually produces.
      *
      * @return array<int,array{id:string,label:string}>|null
      */
@@ -363,8 +361,8 @@ final class CustomField
      * Returns null for anything that cannot be made to fit — a date that is not
      * a date, an integer that is a sentence. Null means "not found", which is a
      * legitimate answer everywhere in this pipeline; storing a malformed value
-     * would push the problem into the Paperless write-back, where it fails much
-     * less legibly.
+     * would push the problem into the review screen or the submission, where it
+     * fails much less legibly.
      */
     public static function coerce(string $dataType, mixed $value): mixed
     {

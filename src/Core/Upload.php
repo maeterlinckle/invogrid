@@ -9,10 +9,10 @@ use RuntimeException;
 /**
  * Files arriving from a browser.
  *
- * The only uploads this application takes are the two logo variants, so this is
- * deliberately small — but an upload endpoint is the one place where a
- * privileged user can put a file of their choosing on the server, so the
- * checking is not proportional to the feature's size.
+ * Two kinds arrive: the logo variants, and the PDFs uploaded on the ingest
+ * page. This stays deliberately small — but an upload endpoint is the one place
+ * where a user can put a file of their choosing on the server, so the checking
+ * is not proportional to the feature's size.
  *
  * Three independent checks, and all three have to pass:
  *
@@ -89,6 +89,7 @@ final class Upload
         array $allowedMimes,
         array $allowedExtensions,
         int $maxBytes,
+        ?callable $contentCheck = null,
     ): ?string {
         $name = self::displayName($file['name']);
 
@@ -133,15 +134,31 @@ final class Upload
             return sprintf('%s does not look like a real %s file inside.', $name, strtoupper($extension));
         }
 
-        // And it has to survive being parsed as an image. This is the check
-        // that a script wearing a PNG header fails.
-        $size = @getimagesize($file['tmp_name']);
+        // And it has to survive being parsed by something that understands the
+        // format. This is the check a script wearing a PNG header fails.
+        $problem = $contentCheck === null
+            ? self::isReallyAnImage($file['tmp_name'])
+            : $contentCheck($file['tmp_name']);
 
-        if ($size === false || (int) $size[0] < 1 || (int) $size[1] < 1) {
-            return $name . ': that file could not be read as an image.';
-        }
+        return $problem === null ? null : $name . ': ' . $problem;
+    }
 
-        return null;
+    /**
+     * The default deep check: does this decode as an image?
+     *
+     * The default rather than an argument every caller passes, because it was
+     * the only kind of upload this application took for a long time and a new
+     * caller that forgets to say what its files are should get the strictest
+     * check rather than none. A caller handling something else — a PDF, say —
+     * passes its own and this is not reached.
+     */
+    private static function isReallyAnImage(string $path): ?string
+    {
+        $size = @getimagesize($path);
+
+        return $size === false || (int) $size[0] < 1 || (int) $size[1] < 1
+            ? 'that file could not be read as an image.'
+            : null;
     }
 
     /**

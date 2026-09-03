@@ -24,9 +24,10 @@ use App\Services\Llm\LlmFactory;
  *    `clearbooks_token_expires_at` — the consent flow writes them. Offering
  *    them as fields invites somebody to break a working connection by hand,
  *    and there is nothing useful they could type.
- *  - `clearbooks_sync_correspondents` and `clearbooks_delete_correspondents` —
- *    already switches on the Clear Books screen, beside the sync they govern.
- *    A second copy here would be two controls for one value.
+ *  - `clearbooks_invoice_sync_interval_minutes` and
+ *    `clearbooks_invoice_sync_last_run` — already on the Clear Books screen,
+ *    beside the sync they govern. A second copy here would be two controls for
+ *    one value, and the second is never the one somebody looks at.
  *
  * `tests/smoke.php` asserts that every key named here exists as a seeded row,
  * so a typo is a failed test rather than a field that silently never saves.
@@ -63,9 +64,9 @@ final class SettingSchema
             'title' => 'This instance',
             'blurb' => 'What InvoGrid calls itself, on screen and on paper.',
         ],
-        'paperless' => [
-            'title' => 'Paperless',
-            'blurb' => 'Where documents come from, and what is written back to them once they have reached Clear Books.',
+        'ingest' => [
+            'title' => 'Incoming documents',
+            'blurb' => 'What InvoGrid will accept from the upload page, and from any ingest route added later.',
         ],
         'clearbooks' => [
             'title' => 'Clear Books',
@@ -119,42 +120,13 @@ final class SettingSchema
                 'hint'    => 'Seconds. 0 keeps it on screen until it is dismissed. Warnings and errors never fade whatever this says — a failure that vanishes on its own is a failure nobody read.',
             ],
 
-            // --- Paperless -------------------------------------------------
-            'paperless_base_url' => [
-                'section'     => 'paperless',
-                'label'       => 'Paperless address',
-                'type'        => self::URL,
-                'rule'        => 'url|max:255',
-                'hint'        => 'The root of the Paperless-ngx installation, with no trailing path.',
-                'placeholder' => 'https://paperless.example.com',
-            ],
-            'paperless_token' => [
-                'section' => 'paperless',
-                'label'   => 'API token',
-                'type'    => self::SECRET,
-                'rule'    => 'max:255',
-                'hint'    => 'From a Paperless user that can read the documents InvoGrid processes and write back to them.',
-            ],
-            'paperless_webhook_secret' => [
-                'section' => 'paperless',
-                'label'   => 'Webhook secret',
-                'type'    => self::SECRET,
-                'rule'    => 'max:255',
-                'hint'    => 'The shared secret the Paperless workflow sends with each document, and the only thing authenticating the webhook — a request without it is rejected. Run php bin/console.php secret:generate for a good one.',
-            ],
-            'paperless_processed_tag_id' => [
-                'section' => 'paperless',
-                'label'   => 'Tag applied once submitted',
+            // --- Incoming documents ----------------------------------------
+            'ingest_max_upload_mb' => [
+                'section' => 'ingest',
+                'label'   => 'Largest document accepted',
                 'type'    => self::INTEGER,
-                'rule'    => 'integer|min_value:1',
-                'hint'    => 'The numeric id of a Paperless tag. Empty means do not tag, which is a legitimate way to run this.',
-            ],
-            'paperless_replace_content' => [
-                'section' => 'paperless',
-                'label'   => 'Replace the Paperless text with InvoGrid’s transcription',
-                'type'    => self::BOOLEAN,
-                'rule'    => 'boolean',
-                'hint'    => 'On: the model reads a scanned invoice better than an OCR engine does, and it is what makes handwritten annotations searchable in Paperless. Off leaves the original text alone.',
+                'rule'    => 'required|integer|min_value:1|max_value:200',
+                'hint'    => 'Megabytes. A colour A4 page scanned at 300dpi is a couple of megabytes, so 25 is roomy for an ordinary invoice. PHP’s own upload_max_filesize and post_max_size still outrank this and cannot be raised from here — the upload page quotes whichever limit is actually the smallest.',
             ],
 
             // --- Clear Books -----------------------------------------------

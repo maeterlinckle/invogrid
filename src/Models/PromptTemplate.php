@@ -31,6 +31,7 @@ final class PromptTemplate
      */
     public const EXTRACTION_VARIABLES = [
         'ocrText', 'today', 'suppliers', 'accountCodes', 'vatRates', 'vatTreatments', 'customFields',
+        'annotations',
     ];
 
     /**
@@ -60,18 +61,19 @@ final class PromptTemplate
 
     /** What each variable expands to, said in one line for the editor. */
     public const VARIABLE_HELP = [
-        'ocrText'       => 'The full transcription of the scan, its "### Notes" section included.',
+        'ocrText'       => 'The transcription of the scan, and nothing but the transcription.',
         'today'         => "Today's date as YYYY-MM-DD, for working out relative wording like \"30 days\".",
-        'suppliers'     => 'Every cached Clear Books supplier, with its Clear Books and Paperless ids.',
+        'suppliers'     => 'Every cached Clear Books supplier, with its Clear Books id.',
         'accountCodes'  => 'The cached purchase account codes. Sales-only codes are not in the list.',
         'vatRates'      => 'The cached purchase VAT rates, each with its percentage.',
         'vatTreatments' => 'The cached purchase VAT treatments.',
         'customFields'  => 'Whatever is active on the Custom fields screen right now, with each hint.',
+        'annotations'   => 'The handwritten marks the OCR pass found, with ink colour and location.',
     ];
 
     /** What a prompt is for, for somebody deciding whether to edit it. */
     public const PURPOSE = [
-        'ocr'                   => 'Reads the page images and returns the transcription, the handwritten annotations and the two high-value fields. Sent with the images, and **verbatim** — no variables.',
+        'ocr'                   => 'Reads the page images and returns the transcription, the handwritten annotations and the two high-value fields. The Clearbooks Number it reports is what decides whether a document goes to the Existing Invoice flow, so a change to that rule changes where documents end up. Sent with the images, and **verbatim** — no variables.',
         'extract_header'        => 'Titles, dates, reference and currency, from the transcription.',
         'extract_supplier'      => 'Matches the issuer against the cached Clear Books supplier list.',
         'extract_lines'         => 'Classifies the document and reads the line items, account codes and VAT.',

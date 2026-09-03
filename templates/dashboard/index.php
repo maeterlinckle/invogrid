@@ -22,7 +22,7 @@ $outstanding = array_filter($setupGaps, static fn (array $check): bool => !$chec
 <div class="page-head">
     <div>
         <h1>Dashboard</h1>
-        <p class="muted">Purchase documents from Paperless, on their way into Clear Books.</p>
+        <p class="muted">Purchase documents on their way into Clear Books.</p>
     </div>
 </div>
 
@@ -87,9 +87,9 @@ $outstanding = array_filter($setupGaps, static fn (array $check): bool => !$chec
                 <caption class="sr-only">Documents that have not moved recently</caption>
                 <thead>
                     <tr>
-                        <th scope="col">Document</th>
-                        <th scope="col">Stuck at</th>
-                        <th scope="col">Waiting</th>
+                        <th scope="col" class="col-grow">Document</th>
+                        <th scope="col" class="col-narrow">Stuck at</th>
+                        <th scope="col" class="col-narrow">Waiting</th>
                     </tr>
                 </thead>
                 <tbody>
@@ -105,10 +105,10 @@ $outstanding = array_filter($setupGaps, static fn (array $check): bool => !$chec
                         <tr>
                             <th scope="row">
                                 <a href="<?= e(url('/documents/' . (int) $item['id'])) ?>">
-                                    #<?= e((string) $item['paperless_doc_id']) ?>
+                                    #<?= (int) $item['id'] ?>
                                 </a>
-                                <?php if ($item['correspondent_raw'] !== null): ?>
-                                    <span class="cell-sub"><?= e((string) $item['correspondent_raw']) ?></span>
+                                <?php if ($item['supplier_raw'] !== null): ?>
+                                    <span class="cell-sub"><?= e((string) $item['supplier_raw']) ?></span>
                                 <?php endif; ?>
                             </th>
                             <td><?= e(Document::label((string) $item['status'])) ?></td>
@@ -121,6 +121,12 @@ $outstanding = array_filter($setupGaps, static fn (array $check): bool => !$chec
     </div>
 <?php endif; ?>
 
+<?php /* Side by side on a monitor. The stage tally is two columns of short
+         values and gains nothing from half a screen; the list of what has
+         actually moved does. They stack below the desktop breakpoint. */ ?>
+<div class="wide-split">
+<section>
+
 <h2 class="section-title">Every stage</h2>
 
 <div class="table-wrap">
@@ -128,20 +134,23 @@ $outstanding = array_filter($setupGaps, static fn (array $check): bool => !$chec
         <caption class="sr-only">Documents at each stage of the pipeline</caption>
         <thead>
             <tr>
-                <th scope="col">Stage</th>
-                <th scope="col">Documents</th>
+                <th scope="col" class="col-grow">Stage</th>
+                <th scope="col" class="amount col-tight">Documents</th>
             </tr>
         </thead>
         <tbody>
             <?php foreach (Document::STATUSES as $status): ?>
                 <tr<?= $counts[$status] === 0 ? ' class="row-muted"' : '' ?>>
                     <th scope="row"><?= e(Document::label($status)) ?></th>
-                    <td><?= (int) $counts[$status] ?></td>
+                    <td class="amount"><?= (int) $counts[$status] ?></td>
                 </tr>
             <?php endforeach; ?>
         </tbody>
     </table>
 </div>
+
+</section>
+<section>
 
 <h2 class="section-title">Recently updated</h2>
 
@@ -150,26 +159,26 @@ $outstanding = array_filter($setupGaps, static fn (array $check): bool => !$chec
         <caption class="sr-only">The ten most recently updated documents</caption>
         <thead>
             <tr>
-                <th scope="col">Paperless</th>
-                <th scope="col">Supplier</th>
-                <th scope="col">Type</th>
-                <th scope="col">Stage</th>
-                <th scope="col">Updated</th>
+                <th scope="col" class="col-tight">Document</th>
+                <th scope="col" class="col-grow">Supplier</th>
+                <th scope="col" class="col-narrow">Type</th>
+                <th scope="col" class="col-narrow">Stage</th>
+                <th scope="col" class="col-date">Updated</th>
             </tr>
         </thead>
         <tbody>
             <?php if ($recent === []): ?>
                 <tr>
                     <td class="empty" colspan="5">
-                        No documents yet. One appears here as soon as a Paperless workflow
-                        posts to the webhook receiver.
+                        No documents yet. <a href="<?= e(url('/documents/upload')) ?>">Upload one</a>
+                        and it appears here straight away.
                     </td>
                 </tr>
             <?php else: ?>
                 <?php foreach ($recent as $document): ?>
                     <tr>
-                        <td class="mono">#<?= (int) $document['paperless_doc_id'] ?></td>
-                        <td><?= e($document['correspondent_raw'] ?? '—') ?></td>
+                        <td class="mono">#<?= (int) $document['id'] ?></td>
+                        <td><?= e($document['supplier_raw'] ?? '—') ?></td>
                         <td><?= e($document['doc_type'] ?? '—') ?></td>
                         <td>
                             <span class="badge <?= $document['status'] === Document::FAILED ? 'badge-danger' : ($document['status'] === Document::NEEDS_REVIEW ? 'badge-warn' : 'badge-muted') ?>">
@@ -186,6 +195,9 @@ $outstanding = array_filter($setupGaps, static fn (array $check): bool => !$chec
 
 <p class="muted"><?= (int) $total ?> document<?= $total === 1 ? '' : 's' ?> in total.</p>
 
+</section>
+</div>
+
 <?php if ($failures !== []): ?>
     <h2 class="section-title">What the machine tripped over</h2>
 
@@ -200,10 +212,10 @@ $outstanding = array_filter($setupGaps, static fn (array $check): bool => !$chec
             <caption class="sr-only">Recent pipeline stage failures</caption>
             <thead>
                 <tr>
-                    <th scope="col">When</th>
-                    <th scope="col">Document</th>
-                    <th scope="col">Stage</th>
-                    <th scope="col">What it said</th>
+                    <th scope="col" class="col-date">When</th>
+                    <th scope="col" class="col-tight">Document</th>
+                    <th scope="col" class="col-narrow">Stage</th>
+                    <th scope="col" class="col-grow">What it said</th>
                 </tr>
             </thead>
             <tbody>
@@ -212,7 +224,7 @@ $outstanding = array_filter($setupGaps, static fn (array $check): bool => !$chec
                         <td class="nowrap"><?= e(format_datetime((string) $failure['created_at'])) ?></td>
                         <th scope="row">
                             <a href="<?= e(url('/documents/' . (int) $failure['document_id'])) ?>">
-                                #<?= e((string) $failure['paperless_doc_id']) ?>
+                                #<?= (int) $failure['id'] ?>
                             </a>
                         </th>
                         <td class="nowrap"><?= e((string) $failure['stage']) ?></td>

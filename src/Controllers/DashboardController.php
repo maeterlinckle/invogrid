@@ -25,8 +25,22 @@ final class DashboardController extends Controller
     {
         $counts = Document::countsByStatus();
 
-        // The three that need a person, in the order a person cares about them.
+        // The five that need a person, in the order a person cares about them.
         $attention = [
+            /*
+             * First, because it is the only one where the wrong answer costs
+             * money rather than time. A document here is a bill that may
+             * already be in the accounts; the others are work waiting to be
+             * done. It is also the smallest number on the page most days,
+             * which is exactly why it goes where it will be seen.
+             */
+            [
+                'status'  => Document::POSSIBLE_DUPLICATE,
+                'label'   => 'Possible duplicates',
+                'count'   => $counts[Document::POSSIBLE_DUPLICATE],
+                'tone'    => 'danger',
+                'caption' => 'May already be in Clear Books',
+            ],
             [
                 'status'  => Document::NEEDS_REVIEW,
                 'label'   => 'Needs review',
@@ -40,6 +54,17 @@ final class DashboardController extends Controller
                 'count'   => $counts[Document::READY_TO_SUBMIT],
                 'tone'    => 'info',
                 'caption' => 'Resolved, not yet sent',
+            ],
+            // The Existing Invoice queue's own count. Beside the other two
+            // rather than folded into "needs review": it is a different queue
+            // on a different screen, and a number that sent somebody to the
+            // wrong one would be worse than no number.
+            [
+                'status'  => Document::NEEDS_LINK,
+                'label'   => 'Needs linking',
+                'count'   => $counts[Document::NEEDS_LINK],
+                'tone'    => 'warn',
+                'caption' => 'Clearbooks Number did not resolve',
             ],
             [
                 'status'  => Document::FAILED,
@@ -56,6 +81,7 @@ final class DashboardController extends Controller
         $inFlight = $counts[Document::RECEIVED]
             + $counts[Document::OCR_PENDING]
             + $counts[Document::OCR_DONE]
+            + $counts[Document::EXISTING_INVOICE]
             + $counts[Document::EXTRACTING]
             + $counts[Document::EXTRACTED]
             + $counts[Document::MATCHING];
@@ -76,6 +102,10 @@ final class DashboardController extends Controller
 
         $this->view('dashboard/index', [
             'pageTitle' => 'Dashboard',
+
+            // Six tables and a stat row: the dashboard is the widest screen
+            // in the application and the least like a column of prose.
+            'wide'      => true,
             'counts'    => $counts,
             'attention' => $attention,
             'inFlight'  => $inFlight,

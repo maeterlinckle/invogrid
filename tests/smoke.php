@@ -48,6 +48,7 @@ use App\Models\AuditLog;
 use App\Models\Document;
 use App\Models\CustomField;
 use App\Models\ClearbooksCache;
+use App\Models\ClearbooksInvoice;
 use App\Models\DocumentType;
 use App\Models\EntityMatch;
 use App\Models\Extraction;
@@ -61,6 +62,9 @@ use App\Services\Llm\LlmException;
 use App\Services\Llm\LlmFactory;
 use App\Services\Llm\LlmResponse;
 use App\Services\Branding;
+use App\Services\FieldIssues;
+use App\Services\InvoiceMatcher;
+use App\Services\InvoiceSync;
 use App\Services\Normaliser;
 use App\Services\PdfRenderer;
 use App\Services\PromptRenderer;
@@ -154,6 +158,89 @@ check('failed -> extracting is allowed (a retry)', Document::canTransition(Docum
 check('submitted -> needs_review is refused', !Document::canTransition(Document::SUBMITTED, Document::NEEDS_REVIEW));
 check('needs_review -> ready_to_submit is allowed', Document::canTransition(Document::NEEDS_REVIEW, Document::READY_TO_SUBMIT));
 
+/*
+ * The branch is at the *end* of the pipeline, not the start.
+ *
+ * Both flows run every stage — a scan of an existing invoice is extracted and
+ * matched exactly like a new one, because it is a document somebody will search
+ * for and report on whether or not anything is ever posted from it. So the OCR
+ * stage has one destination, and `ocr_pending -> existing_invoice` must NOT be
+ * legal: it would mean a document could still skip extraction.
+ */
+check('ocr_pending -> ocr_done is allowed, and is the only way on',
+    Document::canTransition(Document::OCR_PENDING, Document::OCR_DONE)
+    && !Document::canTransition(Document::OCR_PENDING, Document::EXISTING_INVOICE));
+check('an existing-invoice document is extracted like any other',
+    !Document::canTransition(Document::OCR_DONE, Document::EXISTING_INVOICE)
+    && Document::canTransition(Document::OCR_DONE, Document::EXTRACTING));
+
+// The decision rests on a handwritten number read off a scan, so a person
+// looking at the page has to be able to overrule it in either direction —
+// otherwise the only remedy is ignoring the document and uploading it again.
+// One way is the document page's reset control; the other is the queue's "treat
+// it as a new invoice", which flips the route and re-matches.
+check('a reviewer can send a document onto the existing-invoice flow',
+    Document::canTransition(Document::NEEDS_REVIEW, Document::EXISTING_INVOICE)
+    && Document::canTransition(Document::READY_TO_SUBMIT, Document::EXISTING_INVOICE));
+check('and can send one back off it, through a re-match',
+    Document::canTransition(Document::NEEDS_LINK, Document::MATCHING)
+    && Document::canTransition(Document::EXISTING_INVOICE, Document::MATCHING));
+check('an existing-invoice document can still be ignored',
+    Document::canTransition(Document::EXISTING_INVOICE, Document::IGNORED));
+check('a failed document can be retried back onto the existing-invoice flow',
+    Document::canTransition(Document::FAILED, Document::EXISTING_INVOICE));
+
+/*
+ * The duplicate gate on the New Invoice route.
+ *
+ * `matching` is the only status that may reach `possible_duplicate`, and
+ * `matching` is the only status it may reach — which together are the two
+ * halves of "the machine decides where this goes, and it decides through one
+ * implementation". A person confirming a document is genuinely new stamps
+ * `duplicate_cleared_at` and re-runs the stage; they do not choose a
+ * destination, and the stage takes a different exit for a different reason.
+ */
+check('a new invoice may be stopped as a possible duplicate',
+    Document::canTransition(Document::MATCHING, Document::POSSIBLE_DUPLICATE));
+check('and the one way on is a re-match',
+    Document::canTransition(Document::POSSIBLE_DUPLICATE, Document::MATCHING)
+    && !Document::canTransition(Document::POSSIBLE_DUPLICATE, Document::READY_TO_SUBMIT)
+    && !Document::canTransition(Document::POSSIBLE_DUPLICATE, Document::NEEDS_REVIEW)
+    && !Document::canTransition(Document::POSSIBLE_DUPLICATE, Document::SUBMITTED));
+
+/*
+ * Nothing may be *moved into* the duplicate queue by hand.
+ *
+ * The screen it waits on is a comparison against records the matcher found, so
+ * a document parked there by the document page's reset dropdown would arrive at
+ * a page with nothing on one side of it. That control is built from
+ * `canTransition()`, so this assertion is what keeps the option off it — and
+ * `failed` is on the list deliberately, though it lists every other waiting
+ * status: a retry resumes at the head of a stage, and this is not one.
+ */
+check('nothing but the matching stage can send a document to the duplicate queue',
+    (static function (): bool {
+        foreach (Document::TRANSITIONS as $from => $targets) {
+            if ($from === Document::MATCHING) {
+                continue;
+            }
+
+            if (in_array(Document::POSSIBLE_DUPLICATE, $targets, true)) {
+                return false;
+            }
+        }
+
+        return true;
+    })());
+
+check('a possible duplicate can still be ignored',
+    Document::canTransition(Document::POSSIBLE_DUPLICATE, Document::IGNORED));
+
+check('every route has a label',
+    array_diff(Document::ROUTES, array_keys(Document::ROUTE_LABELS)) === []);
+check('an unrouted document says so rather than guessing',
+    Document::routeLabel(null) === 'not decided yet');
+
 // A transition naming a status that does not exist is the kind of typo that
 // only shows up when a document reaches that stage in production.
 check('every transition names a real status', (static function (): bool {
@@ -244,7 +331,35 @@ check('no two stages consume the same status', (static function (): bool {
 
 check('ingest is the stage for a received document', Pipeline::stageFor(Document::RECEIVED) === 'ingest');
 check('nothing runs a document that needs review', Pipeline::stageFor(Document::NEEDS_REVIEW) === null);
+
+check('link is the stage for an existing-invoice document', Pipeline::stageFor(Document::EXISTING_INVOICE) === 'link');
+check('nothing runs a document that needs linking', Pipeline::stageFor(Document::NEEDS_LINK) === null);
+
+// The duplicate gate is part of the matching stage, not a stage of its own —
+// it wants `documents.matched_supplier_id`, which the matching stage is what
+// produces. So nothing consumes `possible_duplicate`, and nothing should: a
+// stage picking it up would find the same records and queue itself for ever.
+check('nothing runs a document that may be a duplicate',
+    Pipeline::stageFor(Document::POSSIBLE_DUPLICATE) === null
+    && !in_array(Document::POSSIBLE_DUPLICATE, array_column(Pipeline::STAGES, 'from'), true));
+check('the ocr stage still declares the new-invoice outcome',
+    Pipeline::STAGES['ocr']['to'] === Document::OCR_DONE);
 check('match is the stage for an extracted document', Pipeline::stageFor(Document::EXTRACTED) === 'match');
+
+/*
+ * A `during` status resolves to its own stage, not to nothing.
+ *
+ * The registry already says a stage with a `during` status accepts a document
+ * back in either one — a worker killed mid-extraction leaves it in
+ * `extracting`. This is the other half of that: `advance()` has to be able to
+ * queue the stage from there, or the document page's "Reset to" control can
+ * move a document into `matching` and enqueue nothing, stranding it until the
+ * dashboard's stuck list notices. `possible_duplicate` is what made it matter —
+ * `matching` is the only status it can move on to.
+ */
+check('a stage picks a document back up from its own working status',
+    Pipeline::stageFor(Document::EXTRACTING) === 'extract'
+    && Pipeline::stageFor(Document::MATCHING) === 'match');
 check('every stage has a handler now', (static function (): bool {
     foreach (Pipeline::STAGES as $stage) {
         if ($stage['handler'] === null) {
@@ -271,6 +386,34 @@ check('a failed ingest retries from received', Document::retryStatusFor('ingest'
 check('a failed ocr retries from ocr_pending', Document::retryStatusFor('ocr') === Document::OCR_PENDING);
 check('an unrecorded stage retries from the start', Document::retryStatusFor(null) === Document::RECEIVED);
 check('an unknown stage retries from the start', Document::retryStatusFor('nonsense') === Document::RECEIVED);
+
+// The Existing Invoice route's own two outcomes. The registry records
+// `needs_link`, the conservative one; `submitted` is what a document reaches
+// when the checksum held — and it has to be legal from `existing_invoice`, or
+// the PDF is attached to somebody's accounts and the transition then throws.
+check('a linked document may go straight to submitted',
+    Document::canTransition(Document::EXISTING_INVOICE, Document::SUBMITTED));
+check('a match that did not settle goes to needs_link',
+    Pipeline::STAGES['link']['to'] === Document::NEEDS_LINK
+    && Document::canTransition(Document::EXISTING_INVOICE, Document::NEEDS_LINK));
+check('a failed link retries from existing_invoice',
+    Document::retryStatusFor('link') === Document::EXISTING_INVOICE);
+
+// The three things the queue offers, and nothing else moves a document out of
+// it: link it, treat it as a new invoice (a re-match), or take it away. Looking
+// the number up again is `needs_link -> existing_invoice`.
+check('the queue can link, re-match, look again, or ignore',
+    Document::canTransition(Document::NEEDS_LINK, Document::SUBMITTED)
+    && Document::canTransition(Document::NEEDS_LINK, Document::MATCHING)
+    && Document::canTransition(Document::NEEDS_LINK, Document::EXISTING_INVOICE)
+    && Document::canTransition(Document::NEEDS_LINK, Document::IGNORED));
+
+// The matching stage is where the two flows part, so `matching` has to be able
+// to reach all three destinations or the stage does its work and then throws.
+check('matching reaches all three of its destinations',
+    Document::canTransition(Document::MATCHING, Document::NEEDS_REVIEW)
+    && Document::canTransition(Document::MATCHING, Document::READY_TO_SUBMIT)
+    && Document::canTransition(Document::MATCHING, Document::EXISTING_INVOICE));
 
 echo "\nName normalisation\n";
 
@@ -477,7 +620,8 @@ echo "\nCustom field coercion\n";
 
 // A value that will not fit its declared type becomes null — "not found", which
 // is a legitimate answer everywhere here. Storing a malformed one pushes the
-// failure into the Paperless write-back, where it is far less legible.
+// failure into the review screen or the submission, where it is far less
+// legible.
 check('an integer field takes a number', CustomField::coerce('integer', '42') === 42);
 check('an integer field refuses a sentence', CustomField::coerce('integer', 'about forty') === null);
 check('a date field normalises', CustomField::coerce('date', '26 August 2026') === '2026-08-26');
@@ -560,9 +704,6 @@ $deliberatelyOpen = [
     'GET /health',
     // The logo, needed by the sign-in page before anybody is signed in.
     'GET /branding/{variant:light|dark}',
-    // Not a browser form. Authenticated by the shared secret in
-    // `paperless_webhook_secret`, because Paperless has no session to carry.
-    'POST /webhook/paperless',
     // Signing in, which cannot itself require being signed in.
     'GET /login',
     'POST /login',
@@ -604,7 +745,7 @@ check(
 // callback is the exception, and the reason is in routes/web.php: it is a
 // redirect from Clear Books, which has no token to carry, and a `state`
 // parameter checked against the session does the same job.
-$csrfExempt = ['POST /webhook/paperless', 'GET /admin/clearbooks/callback'];
+$csrfExempt = ['GET /admin/clearbooks/callback'];
 $unprotected = [];
 
 foreach ($router->routes() as $route) {
@@ -788,8 +929,9 @@ check('bytes are formatted for a person',
  *
  *  - the `:root` and `[data-theme]` blocks, which *are* the variables;
  *  - the print layout, which is one palette because paper is white;
- *  - the logo previews and the scan thumbnail, which must sit on the ground
- *    they are for rather than the page's current theme.
+ *  - the logo previews and the scan viewer's page images, which must sit on the
+ *    ground they are for rather than the page's current theme. A scan of white
+ *    paper on a dark card reads as a hole in the page.
  */
 check('no colour bypasses the theme variables', (static function (): bool {
     $css = (string) file_get_contents(dirname(__DIR__) . '/public/css/app.css');
@@ -811,7 +953,7 @@ check('no colour bypasses the theme variables', (static function (): bool {
         }
 
         // The two deliberate exceptions, both commented in the stylesheet.
-        if (str_contains($line, 'logo-preview') || str_contains($line, 'page-thumb')) {
+        if (str_contains($line, 'logo-preview') || str_contains($line, 'scan-strip')) {
             continue;
         }
 
@@ -820,7 +962,7 @@ check('no colour bypasses the theme variables', (static function (): bool {
             continue;
         }
 
-        // `background: #ffffff;` inside .page-thumb img, which is two lines
+        // `background: #ffffff;` inside .scan-page, which is several lines
         // below its own comment rather than on the selector line.
         if (trim($line) === 'background: #ffffff;') {
             continue;
@@ -1177,7 +1319,6 @@ echo "\nSecrets, and what may reach a browser\n";
  */
 check('no template reads a secret setting', (static function (): bool {
     $secrets = [
-        'paperless_token', 'paperless_webhook_secret',
         'clearbooks_client_secret', 'clearbooks_access_token', 'clearbooks_refresh_token',
         'openai_api_key', 'anthropic_api_key',
     ];
@@ -1332,18 +1473,16 @@ check('every JSON response is a fixed literal, never a settings dump', (static f
     return true;
 })());
 
-// The one thing a remote service can write to this disk.
-check('a PDF fetched from Paperless has a size ceiling', (static function (): bool {
-    $max = (int) Config::get('uploads.max_pdf_bytes', 0);
-
-    if ($max <= 0) {
+// An ingest route is the one place somebody can write a file to this disk.
+check('an ingested PDF has a size ceiling', (static function (): bool {
+    if (App\Services\Ingest\Ingestor::maxBytes() <= 0) {
         return false;
     }
 
-    // And the ceiling is actually passed to the download, not merely configured.
-    $client = (string) file_get_contents(dirname(__DIR__) . '/src/Services/PaperlessClient.php');
-
-    return str_contains($client, "Config::get('uploads.max_pdf_bytes'");
+    // And the quoted limit is the *effective* one. A form promising 25MB while
+    // PHP drops anything over 2MB produces the worst kind of bug report.
+    return App\Services\Ingest\Ingestor::effectiveMaxBytes()
+        <= App\Services\Ingest\Ingestor::maxBytes();
 })());
 
 check('the download cap aborts mid-transfer rather than measuring afterwards', (static function (): bool {
@@ -1355,19 +1494,38 @@ check('the download cap aborts mid-transfer rather than measuring afterwards', (
         && str_contains($http, 'CURLOPT_NOPROGRESS');
 })());
 
-check('a downloaded file that is not a PDF is deleted, not kept', (static function (): bool {
-    $client = (string) file_get_contents(dirname(__DIR__) . '/src/Services/PaperlessClient.php');
+// The header, not the extension and not the browser's Content-Type. This is
+// what a JPEG renamed to .pdf fails.
+check('a file that is not a PDF is refused before any row is created', (static function (): bool {
+    $ingestor = (string) file_get_contents(dirname(__DIR__) . '/src/Services/Ingest/Ingestor.php');
 
-    return str_contains($client, "\$magic !== '%PDF-'")
-        && preg_match('/\$magic !== \'%PDF-\'\).*?unlink\(\$path\)/s', $client) === 1;
+    if (!str_contains($ingestor, "\$magic !== '%PDF-'")) {
+        return false;
+    }
+
+    // check() has to run before the insert, or a refused file leaves a
+    // document behind at `received` with no PDF under it.
+    return preg_match('/self::check\(\$candidate\);.*?Database::insert\(.documents./s', $ingestor) === 1;
 })());
 
-// A timing-safe comparison, on every route the secret can arrive by.
-check('the webhook secret is compared in constant time', (static function (): bool {
-    $controller = (string) file_get_contents(dirname(__DIR__) . '/src/Controllers/WebhookController.php');
+check('the stored PDF is checked again by the ingest stage', (static function (): bool {
+    // Not the same check twice: the ingestor reads a file it is about to
+    // accept, this reads the file that was actually written.
+    $stage = (string) file_get_contents(dirname(__DIR__) . '/src/Services/IngestStage.php');
 
-    return substr_count($controller, 'hash_equals(') >= 3
-        && !preg_match('/\$expected\s*===\s*\$/', $controller);
+    return str_contains($stage, "\$magic !== '%PDF-'")
+        && str_contains($stage, 'assertPdf');
+})());
+
+// A browser upload must be moved with move_uploaded_file(), which refuses any
+// path PHP did not itself receive as an upload. rename() would not, and an
+// upload handler that can be pointed at /etc/passwd is the classic version of
+// this bug.
+check('a browser upload is moved with move_uploaded_file', (static function (): bool {
+    $candidate = (string) file_get_contents(dirname(__DIR__) . '/src/Services/Ingest/IngestCandidate.php');
+
+    return str_contains($candidate, 'return move_uploaded_file($this->path, $target);')
+        && str_contains($candidate, '!is_uploaded_file($this->path)');
 })());
 
 echo "\nRate limits and backoff\n";
@@ -1574,6 +1732,7 @@ echo "\nTemplates\n";
 foreach ([
     'layouts/app', 'layouts/auth',
     'partials/brand', 'partials/nav', 'partials/footer', 'partials/flash',
+    'partials/scan', 'partials/extraction', 'partials/matches',
     'auth/login', 'dashboard/index', 'errors/error',
 ] as $template) {
     check(
@@ -1581,6 +1740,192 @@ foreach ([
         is_file(dirname(__DIR__) . '/templates/' . $template . '.php')
     );
 }
+
+/*
+ * The review screen's marks. Every one of these is a rendering rule that a
+ * template asserts and nothing else would catch: a wrong `class` is invisible
+ * to PHP and to the browser, and reads on screen as "this field is fine".
+ */
+check('the scan viewer is what the review screens use', (static function (): bool {
+    $ok = true;
+
+    foreach (['review/show', 'existing/show', 'duplicates/show', 'documents/show'] as $template) {
+        $markup = (string) file_get_contents(dirname(__DIR__) . '/templates/' . $template . '.php');
+
+        // The page images by way of the shared partial, and no screen still
+        // embedding the PDF on its own — the whole point of Prompt 19's change
+        // is that all four show the scan the same way.
+        if (!str_contains($markup, "partial('partials/scan'") || str_contains($markup, 'class="pdf-frame"')) {
+            echo '        ' . $template . " does not use partials/scan, or still embeds the PDF itself\n";
+            $ok = false;
+        }
+    }
+
+    return $ok;
+})());
+
+check('the scan viewer works with no JavaScript', (static function (): bool {
+    $markup = (string) file_get_contents(dirname(__DIR__) . '/templates/partials/scan.php');
+
+    // The page arrows and the zoom toggle cannot work without a script, so they
+    // ship hidden. "View PDF" can, so it is a real link and must not.
+    return str_contains($markup, 'data-scan-prev hidden')
+        && str_contains($markup, 'data-scan-zoom aria-pressed="false" hidden')
+        && str_contains($markup, 'href="<?= e($pdfUrl) ?>" target="_blank"');
+})());
+
+check('the flag helpers say a word and not only a colour', (static function (): bool {
+    // Colour alone is not a signal every reader receives, and which fields need
+    // looking at is the entire point of the mark.
+    return str_contains(flag_tag(FieldIssues::DANGER), 'must be resolved')
+        && str_contains(flag_tag(FieldIssues::WARN), 'check this')
+        && flag_tag(null) === ''
+        && flag_class(null) === ''
+        && str_contains(flag_class(FieldIssues::DANGER), 'is-flagged-danger')
+        && !str_contains(flag_class(FieldIssues::WARN), 'is-flagged-danger');
+})());
+
+echo "\nPer-field issue attribution\n";
+
+/*
+ * `FieldIssues` decides which input each review note, unresolved match and
+ * uncertain reading is drawn on. A wrong answer sends a reviewer to correct a
+ * value that was right, so every rule it applies is asserted here — including
+ * the one that matters most, which is that it refuses to guess.
+ */
+$issueFixture = static function (array $notes, array $matches = [], array $confidence = []): FieldIssues {
+    return FieldIssues::build(
+        [
+            'review_notes' => $notes === [] ? null : json_encode($notes),
+            'confidence'   => $confidence === [] ? null : json_encode($confidence),
+        ],
+        $matches,
+        [
+            ['field_key' => 'job_number', 'label' => 'Job Number'],
+            ['field_key' => 'job',        'label' => 'Job'],
+        ]
+    );
+};
+
+$unmatched = static fn (string $type, ?int $line, ?string $note = null): array => [
+    'entity_type' => $type,
+    'line_index'  => $line,
+    'status'      => App\Models\EntityMatch::UNMATCHED,
+    'raw_value'   => 'ACME',
+    'note'        => $note,
+    'confidence'  => null,
+    'matched_id'  => null,
+    'matched_name' => null,
+];
+
+$issues = $issueFixture(
+    [
+        'Header: the due date was not stated on the document.',
+        'Line 2: no account code was chosen.',
+        'Line 3: 4 x 12.50 comes to 50.00, but the line total says 45.00.',
+        'Document type: none was returned; left unclassified.',
+        'Line items: none were found on this document.',
+        'Custom fields: Job Number was hard to read.',
+        'Supplier: two addresses appear on the letterhead.',
+        'Matching: Supplier: nothing on file matched "ACME".',
+        'Matching: Account code on line 2: nothing on file matched "7502".',
+        'Setup: the cached VAT rates list is empty.',
+        'Header: something nobody has a rule for.',
+    ],
+    [
+        $unmatched(App\Models\EntityMatch::SUPPLIER, null, 'nothing on file matched "ACME".'),
+        $unmatched(App\Models\EntityMatch::ACCOUNT_CODE, 1),
+    ],
+    ['invoice_number' => 0.55, 'gross_amount' => 0.95]
+);
+
+check('a phrase the pipeline wrote lands on its own field',
+    $issues->tone('due_date') === FieldIssues::WARN
+    && $issues->tone('doc_type') === FieldIssues::WARN
+    && $issues->tone('supplier_name_raw') === FieldIssues::DANGER
+    && $issues->tone('lines') === FieldIssues::WARN);
+
+check('a line note lands on the right cell of the right row',
+    // The notes count from 1 and the form's rows from 0.
+    $issues->onLine(1, 'account_code') !== []
+    && $issues->onLine(2, 'total') !== []
+    && $issues->onLine(0, 'account_code') === []);
+
+check('an unresolved entity is danger, and a note is not',
+    $issues->tone('line.1.account_code') === FieldIssues::DANGER
+    && $issues->tone('due_date') === FieldIssues::WARN);
+
+check('the matching stage does not say the same thing twice', (static function () use ($issues): bool {
+    // The `entity_matches` row and the "Matching: …" note are the same fact in
+    // two forms; two marks saying it on one input reads as two separate
+    // problems. The row wins, because it is structural rather than parsed out
+    // of a sentence — so nothing left on the cell is that stage's prose.
+    //
+    // The extraction stage's own "Line 2: no account code was chosen." stays:
+    // it is a different statement that happens to be about the same cell.
+    $texts = array_column($issues->on('line.1.account_code'), 'text');
+
+    return $texts === [
+        'Nothing on file in Clear Books matched "ACME".',
+        'Line 2: no account code was chosen.',
+    ];
+})());
+
+check('a matching note with no row behind it is still shown', (static function () use ($issueFixture): bool {
+    // That stage writes notes the `entity_matches` table does not carry — a
+    // cached supplier id that has gone stale, a credit document waiting to be
+    // agreed. Dropping those with the duplicates would lose them entirely.
+    $stale = $issueFixture([
+        'Matching: the extraction claimed Clear Books supplier "9", which is not in the current cache.',
+    ]);
+
+    return $stale->on('supplier_name_raw') !== [];
+})());
+
+check('a custom-field note picks the longest matching label',
+    // "Job Number" and "Job" are both configured; the note names the first.
+    $issues->on('custom_job_number') !== [] && $issues->on('custom_job') === []);
+
+check('a per-field confidence score is read, and only below the floor',
+    $issues->tone('invoice_number') === FieldIssues::WARN
+    && $issues->tone('gross_amount') === null);
+
+check('a note that names no field is kept rather than guessed at', (static function () use ($issues): bool {
+    $texts = array_column($issues->unplaced(), 'text');
+
+    return count($texts) === 2
+        && in_array('Setup: the cached VAT rates list is empty.', $texts, true)
+        && in_array('Header: something nobody has a rule for.', $texts, true);
+})());
+
+check('a bare word is not enough to claim a field', (static function () use ($issueFixture): bool {
+    // "date" and "amount" on their own are deliberately not in the phrase list:
+    // the cost of a wrong mark is a reviewer editing a value that was right.
+    $vague = $issueFixture(['Header: the date on this one is unusual.']);
+
+    return $vague->unplaced() !== [] && $vague->fieldCount() === 0;
+})());
+
+check('a matched entity below full confidence is flagged, not silent', (static function (): bool {
+    $issues = FieldIssues::build([], [[
+        'entity_type'  => App\Models\EntityMatch::VAT_RATE,
+        'line_index'   => 0,
+        'status'       => App\Models\EntityMatch::MATCHED,
+        'raw_value'    => '20%',
+        'note'         => null,
+        'confidence'   => 0.9,
+        'matched_id'   => 'S',
+        'matched_name' => 'Standard 20%',
+    ]]);
+
+    return $issues->tone('line.0.vat_rate') === FieldIssues::WARN;
+})());
+
+check('nothing wrong means nothing marked', (static function () use ($issueFixture): bool {
+    $clean = $issueFixture([]);
+
+    return !$clean->any() && $clean->count() === 0 && $clean->tone('invoice_date') === null;
+})());
 
 echo "\nDatabase\n";
 
@@ -1672,7 +2017,13 @@ if ($dbReady) {
 
     $ocrPrompt = PromptTemplate::content('ocr');
 
-    check('it asks for the ### Notes section', str_contains($ocrPrompt, '### Notes'));
+    // The notes section is gone, and staying gone is the point: it was a second
+    // copy of the structured fields, flattened into the transcription, and
+    // anything that reappends it puts text into the permanent record of a page
+    // that is not printed on that page.
+    check('it no longer asks for a ### Notes section', !str_contains($ocrPrompt, '### Notes'));
+    check('it says the transcription is the transcription',
+        str_contains($ocrPrompt, 'is the transcription from Step 1 and nothing else'));
     check('it forbids substituting a printed number', str_contains($ocrPrompt, 'do not guess or substitute a printed number'));
     check('it says a Clearbooks Number is digits only', str_contains($ocrPrompt, 'digits only'));
     check('it describes the red pen and the # prefix', str_contains($ocrPrompt, 'RED pen') && str_contains($ocrPrompt, 'preceded by "#"'));
@@ -1713,7 +2064,10 @@ if ($dbReady) {
     check('ocr_results has somewhere to put structure', (static function (): bool {
         $columns = array_column(Database::select('SHOW COLUMNS FROM ocr_results'), 'Field');
 
-        foreach (['raw_text', 'ocr_text', 'structured_json', 'notes_present'] as $column) {
+        foreach ([
+            'raw_text', 'ocr_text', 'structured_json', 'notes_present',
+            'clearbooks_number', 'project_code', 'annotations_json',
+        ] as $column) {
             if (!in_array($column, $columns, true)) {
                 return false;
             }
@@ -1729,13 +2083,15 @@ if ($dbReady) {
     if ($probeDoc > 0) {
         $structured = [
             'ocrText'                => "--- Page 1 ---
-ACME
-
-### Notes
-- none",
-            'notesPresent'           => false,
-            'handwrittenAnnotations' => [],
-            'clearbooksNumber'       => '80421',
+ACME",
+            'notesPresent'           => true,
+            'handwrittenAnnotations' => [
+                ['text' => '#80421', 'inkColor' => 'red', 'marksPrintedText' => null, 'location' => 'top right'],
+            ],
+            // Written with the "#" the prompt says it usually carries, because
+            // the stripping of it is the part worth guarding: `#80421` and
+            // `80421` are one reference, not two.
+            'clearbooksNumber'       => '#80421',
             'project'                => 'AB24',
         ];
 
@@ -1753,9 +2109,30 @@ ACME
                 OcrResult::text($row) === $structured['ocrText']);
             check('text() is the transcription, not the JSON',
                 !str_starts_with(trim(OcrResult::text($row)), '{'));
+            check('the transcription carries no notes section',
+                !str_contains(OcrResult::text($row), '### Notes'));
             check('the structured half round-trips',
-                (OcrResult::structured($row)['clearbooksNumber'] ?? null) === '80421');
-            check('notesPresent is promoted to a column', (int) $row['notes_present'] === 0);
+                (OcrResult::structured($row)['clearbooksNumber'] ?? null) === '#80421');
+            check('notesPresent is promoted to a column', (int) $row['notes_present'] === 1);
+
+            // The three the routing decision and the review screen read. They
+            // are columns rather than a decode of `structured_json` so the
+            // branch can test one value per document without unpacking a blob.
+            check('the Clearbooks Number is promoted, without its hash',
+                OcrResult::clearbooksNumber($row) === '80421');
+            check('the project code is promoted', OcrResult::projectCode($row) === 'AB24');
+            check('the annotations are promoted', (static function () use ($row): bool {
+                $annotations = OcrResult::annotations($row);
+
+                return count($annotations) === 1 && ($annotations[0]['inkColor'] ?? null) === 'red';
+            })());
+
+            // What decides the branch. Digits route; anything else is a misread
+            // of a handwritten number, and the prompt is explicit that a code
+            // with letters in it is a Project rather than this.
+            check('a digits-only number is usable', OcrResult::isUsableNumber('80421'));
+            check('a lettered code is not a Clearbooks Number', !OcrResult::isUsableNumber('AB24'));
+            check('an absent number is not usable', !OcrResult::isUsableNumber(null));
 
             // A model that answered in prose still produced a usable
             // transcription; it simply has no structure to promote.
@@ -1777,6 +2154,103 @@ ACME
         }
     }
 
+    /*
+     * The routing decision, end to end, without a model call.
+     *
+     * `OcrStage::route()` is given a stored OCR result and asked which flow the
+     * document is on. Everything either side of it — the response arriving, the
+     * pages being rendered — is the part that costs money and is not what is
+     * being checked here.
+     *
+     * **The status is the same in every case, and that is half the assertion.**
+     * The route is recorded on the document and every document goes on to
+     * `ocr_done` to be extracted: a scan of an existing invoice is a document
+     * somebody will search for, so it gets the same reading as any other, and
+     * the two flows part at the end of matching instead. An earlier version
+     * returned `existing_invoice` here and skipped extraction; if that ever
+     * comes back, this fails.
+     */
+    check('the OCR stage sends a document down the right flow', (static function (): bool {
+        $route = new ReflectionMethod(App\Services\OcrStage::class, 'route');
+        $route->setAccessible(true);
+        $stage = new App\Services\OcrStage();
+
+        $cases = [
+            // Written with the hash, as the prompt says it usually is.
+            ['#80421', Document::OCR_DONE, Document::ROUTE_EXISTING],
+            // Absent, which is the ordinary document.
+            [null, Document::OCR_DONE, Document::ROUTE_NEW],
+            // A misread: the prompt is explicit that a code with letters in it
+            // is a Project, so this must not route on it.
+            ['AB24', Document::OCR_DONE, Document::ROUTE_NEW],
+        ];
+
+        $documentIds = [];
+
+        try {
+            foreach ($cases as [$number, $expectedStatus, $expectedRoute]) {
+                $documentId = Database::insert('documents', [
+                    'ingest_source'     => 'upload',
+                    'original_filename' => '__smoke__.pdf',
+                    'ingested_at'       => date('Y-m-d H:i:s'),
+                    'status'            => Document::OCR_PENDING,
+                ]);
+
+                $documentIds[] = $documentId;
+
+                $resultId = OcrResult::create($documentId, [
+                    'llm_provider' => '__smoke_route__',
+                    'llm_model'    => '__smoke_route__',
+                    'raw_text'     => '{}',
+                    'structured'   => [
+                        'ocrText'                => 'ACME SUPPLIES LTD',
+                        'notesPresent'           => $number !== null,
+                        'handwrittenAnnotations' => $number === null ? [] : [
+                            ['text' => $number, 'inkColor' => 'red', 'location' => 'top right'],
+                        ],
+                        'clearbooksNumber'       => $number,
+                        'project'                => null,
+                    ],
+                ]);
+
+                $result = OcrResult::find($resultId) ?? [];
+                $next   = $route->invoke($stage, $documentId, $result);
+
+                if ($next !== $expectedStatus) {
+                    return false;
+                }
+
+                // The runner does this, and it has to be a legal move or the
+                // stage does its work and then throws on the way out.
+                Document::transitionTo($documentId, $next);
+
+                $document = Document::find($documentId) ?? [];
+
+                if (($document['status'] ?? null) !== $expectedStatus) {
+                    return false;
+                }
+
+                if (($document['route'] ?? null) !== $expectedRoute) {
+                    return false;
+                }
+
+                // The annotation data has to be there on either route — that is
+                // the point of storing it rather than appending it to prose.
+                if ($number !== null && OcrResult::annotations($result) === []) {
+                    return false;
+                }
+            }
+
+            return true;
+        } finally {
+            foreach ($documentIds as $documentId) {
+                Database::run('DELETE FROM documents WHERE id = ?', [$documentId]);
+            }
+
+            Database::run('DELETE FROM ocr_results WHERE llm_provider = ?', ['__smoke_route__']);
+        }
+    })());
+
     // The three extraction prompts, plus the custom-field fallback. Each one
     // must exist, be active, and name only variables the stage actually
     // provides — a prompt asking for something nothing supplies fails at render
@@ -1790,7 +2264,7 @@ ACME
         'extract_header'        => ['ocrText', 'today'],
         'extract_supplier'      => ['ocrText', 'suppliers'],
         'extract_lines'         => ['ocrText', 'accountCodes', 'vatRates', 'vatTreatments'],
-        'extract_custom_fields' => ['ocrText', 'customFields'],
+        'extract_custom_fields' => ['ocrText', 'customFields', 'annotations'],
     ] as $key => $expected) {
         $prompt = PromptTemplate::active($key);
 
@@ -1817,8 +2291,21 @@ ACME
 
     check('the header prompt keeps the due-date priority order',
         str_contains($header, 'priority order') && str_contains($header, 'month end'));
-    check('the header prompt ignores the notes section',
-        str_contains($header, 'Ignore anything from "### Notes" onward'));
+    // An instruction to skip past a landmark that is no longer there is worse
+    // than no instruction: a model that goes looking for it will find some
+    // other heading and do as it was told.
+    check('no extraction prompt still points at the notes section', (static function (): bool {
+        foreach (['extract_header', 'extract_supplier', 'extract_lines', 'extract_custom_fields'] as $key) {
+            if (str_contains(PromptTemplate::content($key), '### Notes')) {
+                return false;
+            }
+        }
+
+        return true;
+    })());
+    check('the custom-field prompt is given the annotations instead',
+        str_contains(PromptTemplate::content('extract_custom_fields'), '<annotations>')
+        && str_contains(PromptTemplate::content('extract_custom_fields'), '{{ annotations }}'));
     check('the header prompt leaves GBP as null', str_contains($header, 'assume GBP and use null'));
 
     check('the supplier prompt handles t/a and slash variants',
@@ -2012,7 +2499,7 @@ ACME
 
         foreach ([
             'clearbooks_authorise_url', 'clearbooks_redirect_uri', 'clearbooks_scopes',
-            'clearbooks_sync_correspondents', 'clearbooks_delete_correspondents',
+            'clearbooks_invoice_sync_interval_minutes',
         ] as $key) {
             if (!in_array($key, $keys, true)) {
                 return false;
@@ -2037,6 +2524,858 @@ ACME
             'accounting.suppliers:write',
             'accounting.vat:read',
         ];
+    })());
+
+    echo "\nThe Clear Books invoice sync (against the real table)\n";
+
+    check('clearbooks_invoices knows the two purchase types the code writes',
+        $enumValues('clearbooks_invoices', 'purchase_type') === $sorted(ClearbooksInvoice::types()));
+
+    check('the invoice sync settings are seeded', (static function (): bool {
+        $keys = array_keys(Setting::summary());
+
+        return in_array(InvoiceSync::INTERVAL_KEY, $keys, true)
+            && in_array(InvoiceSync::LAST_RUN_KEY, $keys, true);
+    })());
+
+    /*
+     * A Clear Books record onto the columns a duplicate check will read.
+     *
+     * The ids are far outside anything Clear Books would issue, and every row
+     * is removed afterwards — this runs against the live table.
+     */
+    check('a purchase document round-trips into its columns', (static function (): bool {
+        $id = '99000001';
+
+        Database::run('DELETE FROM clearbooks_invoices WHERE clearbooks_id = ?', [$id]);
+
+        try {
+            $record = [
+                'id'                      => (int) $id,
+                'formattedDocumentNumber' => 'PUR9999',
+                'date'                    => '2026-03-04',
+                'dateDue'                 => '2026-04-04',
+                'supplierId'              => 4242,
+                'reference'               => 'SUPPLIER-REF-1',
+                'grossAmount'             => 120.55,
+                'lineItems'               => [['description' => 'x', 'unitPrice' => 10, 'quantity' => 1]],
+            ];
+
+            $first = ClearbooksInvoice::upsert(ClearbooksInvoice::BILL, $record);
+
+            if ($first['outcome'] !== 'created' || $first['derivedGross']) {
+                return false;
+            }
+
+            $row = ClearbooksInvoice::find($id);
+
+            if (
+                $row === null
+                || (string) $row['purchase_type'] !== ClearbooksInvoice::BILL
+                || (string) $row['document_number'] !== 'PUR9999'
+                || (string) $row['document_date'] !== '2026-03-04'
+                || (string) $row['due_date'] !== '2026-04-04'
+                // A string, and the same string clearbooks_cache.remote_id
+                // holds, so the two can be joined without a cast.
+                || (string) $row['supplier_id'] !== '4242'
+                || (string) $row['reference'] !== 'SUPPLIER-REF-1'
+                || (float) $row['gross_amount'] !== 120.55
+            ) {
+                return false;
+            }
+
+            // The whole record is kept, not just the columns — a later prompt
+            // promoting a field to a column must not need a re-sync.
+            $raw = json_decode((string) $row['raw_json'], true);
+
+            if (!is_array($raw) || ($raw['lineItems'][0]['description'] ?? '') !== 'x') {
+                return false;
+            }
+
+            // Same record again is not a change; a different one is.
+            if (ClearbooksInvoice::upsert(ClearbooksInvoice::BILL, $record)['outcome'] !== 'unchanged') {
+                return false;
+            }
+
+            $record['reference'] = 'SUPPLIER-REF-2';
+
+            return ClearbooksInvoice::upsert(ClearbooksInvoice::BILL, $record)['outcome'] === 'updated';
+        } finally {
+            Database::run('DELETE FROM clearbooks_invoices WHERE clearbooks_id = ?', [$id]);
+        }
+    })());
+
+    /*
+     * The gross amount, which is the field a duplicate check leans on hardest
+     * and the one Clear Books' specification is least explicit about.
+     */
+    check('a reported total beats a derived one, and the sign survives', (static function (): bool {
+        $reported = ClearbooksInvoice::gross(['total' => '81.00', 'lineItems' => [
+            ['unitPrice' => 1, 'quantity' => 1],
+        ]]);
+
+        if ($reported['amount'] !== '81.00' || $reported['derived']) {
+            return false;
+        }
+
+        // No total at all: worked out from the lines, with a stated VAT amount
+        // used in preference to a rate.
+        $derived = ClearbooksInvoice::gross(['lineItems' => [
+            ['unitPrice' => 10, 'quantity' => 3, 'vatRateKey' => 'Manual', 'vatAmount' => 4.5],
+        ]]);
+
+        if ($derived['amount'] !== '34.50' || !$derived['derived']) {
+            return false;
+        }
+
+        // A purchase refund is a bill with negative amounts. Flattening that to
+        // an absolute value would lose the one thing telling it from a bill.
+        $refund = ClearbooksInvoice::gross(['grossAmount' => -60]);
+
+        if ($refund['amount'] !== '-60.00') {
+            return false;
+        }
+
+        // Nothing to go on is null rather than zero: zero is a real amount.
+        return ClearbooksInvoice::gross(['id' => 1])['amount'] === null;
+    })());
+
+    check('a record with no id is skipped rather than given one',
+        ClearbooksInvoice::upsert(ClearbooksInvoice::BILL, ['reference' => 'no id'])['outcome'] === 'skipped');
+
+    /*
+     * The deletion sync, which is the dangerous half of "Clear Books is the
+     * source of truth".
+     *
+     * Every real row is named in the seen list, exactly as the supplier test
+     * above learned to do: without that, running this against a live database
+     * would empty the table.
+     */
+    check('an empty fetch never empties the table', ClearbooksInvoice::deleteMissing([]) === 0);
+
+    check('a document gone from Clear Books goes from here', (static function (): bool {
+        $keep = '99000002';
+        $drop = '99000003';
+
+        foreach ([$keep, $drop] as $id) {
+            ClearbooksInvoice::upsert(ClearbooksInvoice::CREDIT_NOTE, ['id' => $id, 'date' => '2026-01-01']);
+        }
+
+        try {
+            $real = array_column(
+                Database::select('SELECT clearbooks_id FROM clearbooks_invoices'),
+                'clearbooks_id'
+            );
+
+            // Everything that is really there, minus the one being retired.
+            $seen = array_values(array_diff($real, [$drop]));
+
+            if (ClearbooksInvoice::deleteMissing($seen) !== 1) {
+                return false;
+            }
+
+            return ClearbooksInvoice::find($drop) === null
+                && ClearbooksInvoice::find($keep) !== null;
+        } finally {
+            Database::run('DELETE FROM clearbooks_invoices WHERE clearbooks_id IN (?, ?)', [$keep, $drop]);
+        }
+    })());
+
+    /*
+     * The schedule. It is a settings row, so this puts the real value back
+     * whatever happens — a test that leaves an install syncing every five
+     * minutes has changed the thing it was measuring.
+     */
+    check('the schedule is read, clamped, and turned off by zero', (static function (): bool {
+        $interval = Setting::stored(InvoiceSync::INTERVAL_KEY);
+        $lastRun  = Setting::stored(InvoiceSync::LAST_RUN_KEY);
+
+        try {
+            Setting::put(InvoiceSync::INTERVAL_KEY, '30');
+            Setting::put(InvoiceSync::LAST_RUN_KEY, '');
+
+            if (InvoiceSync::intervalMinutes() !== 30 || InvoiceSync::lastRun() !== null) {
+                return false;
+            }
+
+            // Never run means due now, which is what somebody who has just set
+            // an interval expects to happen.
+            if (!InvoiceSync::isDue()) {
+                return false;
+            }
+
+            // Measured from when the last run started, not from when it ended.
+            Setting::put(InvoiceSync::LAST_RUN_KEY, (string) json_encode([
+                'at' => date('Y-m-d H:i:s', time() - 600), 'ok' => true,
+            ]));
+
+            if (InvoiceSync::isDue() || InvoiceSync::dueAt() === null) {
+                return false;
+            }
+
+            // Below the floor is clamped rather than obeyed: a one-minute sync
+            // would walk somebody's whole ledger sixty times an hour.
+            Setting::put(InvoiceSync::INTERVAL_KEY, '1');
+
+            if (InvoiceSync::intervalMinutes() !== InvoiceSync::MIN_INTERVAL) {
+                return false;
+            }
+
+            Setting::put(InvoiceSync::INTERVAL_KEY, '0');
+
+            return InvoiceSync::intervalMinutes() === 0
+                && InvoiceSync::dueAt() === null
+                && !InvoiceSync::isDue();
+        } finally {
+            Setting::put(InvoiceSync::INTERVAL_KEY, $interval ?? (string) InvoiceSync::DEFAULT_INTERVAL);
+            Setting::put(InvoiceSync::LAST_RUN_KEY, $lastRun ?? '');
+        }
+    })());
+
+    /*
+     * Both ways of starting a sync take the same lock.
+     *
+     * Two runs at once walk the same list twice against an API that throttles
+     * above five requests a second. The cron script and the button are separate
+     * processes, so only a shared lock can make one wait for the other — and
+     * the way that stops being true is somebody adding a third caller that
+     * calls `run()` directly.
+     */
+    check('a sync can be locked, and both callers do', (static function (): bool {
+        $handle = InvoiceSync::lock();
+
+        if ($handle === null) {
+            // Genuinely held by a run in progress, which is not a failure of
+            // this check; anything else is.
+            return is_file(rtrim((string) Config::get('storage.path'), '/\\') . '/invoices.lock');
+        }
+
+        InvoiceSync::unlock($handle);
+
+        foreach ([
+            dirname(__DIR__) . '/bin/sync-invoices.php',
+            dirname(__DIR__) . '/src/Controllers/ClearBooksController.php',
+        ] as $file) {
+            if (!str_contains((string) file_get_contents($file), 'InvoiceSync::lock()')) {
+                echo '        ' . basename($file) . " starts a sync without taking the lock\n";
+
+                return false;
+            }
+        }
+
+        return true;
+    })());
+
+    echo "\nThe Existing Invoice route (against the real tables)\n";
+
+    check('documents knows the needs_link status the code writes',
+        in_array(Document::NEEDS_LINK, $enumValues('documents', 'status'), true));
+
+    /*
+     * There is nothing to configure about the checksum, and that is the
+     * assertion: a tolerance setting appearing here later would mean somebody
+     * had made it possible to attach a scan to a record whose date and total
+     * do not agree, without anybody looking. If that is ever wanted it should
+     * be an argued change, not a settings row that appeared.
+     */
+    check('the checksum has no tolerance settings behind it', (static function (): bool {
+        foreach (array_keys(Setting::summary()) as $key) {
+            if (str_contains((string) $key, 'tolerance')) {
+                return false;
+            }
+        }
+
+        return !in_array('linking', array_keys(SettingSchema::SECTIONS), true);
+    })());
+
+    /*
+     * The lookup, against real rows.
+     *
+     * The two comparisons it makes are the whole of item 1 of this route: the
+     * number exactly as written, and the digits alone with leading zeros
+     * dropped — which is what makes "80421" written in red pen find a record
+     * Clear Books calls PUR0080421.
+     *
+     * Every row is removed afterwards; the ids are far outside anything Clear
+     * Books would issue, and this runs against the live table.
+     */
+    check('a handwritten number finds its Clear Books record', (static function (): bool {
+        $ids = ['99000101', '99000102', '99000103'];
+
+        Database::run(
+            'DELETE FROM clearbooks_invoices WHERE clearbooks_id IN (?, ?, ?)',
+            $ids
+        );
+
+        try {
+            ClearbooksInvoice::upsert(ClearbooksInvoice::BILL, [
+                'id'                      => $ids[0],
+                'formattedDocumentNumber' => 'PUR0080421',
+                'date'                    => '2026-07-14',
+                'reference'               => 'INV-2026-0042',
+                'grossAmount'             => 413.28,
+            ]);
+
+            // Written exactly as Clear Books spells it.
+            ClearbooksInvoice::upsert(ClearbooksInvoice::CREDIT_NOTE, [
+                'id'                      => $ids[1],
+                'formattedDocumentNumber' => '80422',
+                'date'                    => '2026-07-15',
+                'grossAmount'             => 20.00,
+            ]);
+
+            $viaDigits = InvoiceMatcher::lookup('#80421');
+
+            if (
+                $viaDigits['outcome'] !== InvoiceMatcher::MATCHED
+                || (string) $viaDigits['invoice']['clearbooks_id'] !== $ids[0]
+            ) {
+                return false;
+            }
+
+            $exact = InvoiceMatcher::lookup('80422');
+
+            if (
+                $exact['outcome'] !== InvoiceMatcher::MATCHED
+                || (string) $exact['invoice']['purchase_type'] !== ClearbooksInvoice::CREDIT_NOTE
+            ) {
+                return false;
+            }
+
+            if (InvoiceMatcher::lookup('99998888')['outcome'] !== InvoiceMatcher::NONE) {
+                return false;
+            }
+
+            /*
+             * Two records answering to the same number resolve to nothing.
+             *
+             * The same rule the supplier matcher holds to for an ambiguous
+             * name, and for a heavier reason: guessing wrong here attaches this
+             * document's PDF to somebody else's invoice.
+             */
+            ClearbooksInvoice::upsert(ClearbooksInvoice::BILL, [
+                'id'                      => $ids[2],
+                'formattedDocumentNumber' => 'PUR80421',
+                'date'                    => '2026-01-01',
+                'grossAmount'             => 9.99,
+            ]);
+
+            return InvoiceMatcher::lookup('80421')['outcome'] === InvoiceMatcher::AMBIGUOUS;
+        } finally {
+            Database::run('DELETE FROM clearbooks_invoices WHERE clearbooks_id IN (?, ?, ?)', $ids);
+        }
+    })());
+
+    /*
+     * The checksum, which is the sentence this whole route turns on: **the
+     * invoice date and the gross total must both agree exactly.**
+     *
+     * Every case below is a real shape, and the important ones are the near
+     * misses — a day out, a penny out — because those are what a tolerance
+     * would have let through unseen.
+     */
+    check('the checksum passes only on an exact agreement', (static function (): bool {
+        $record = ['document_date' => '2026-07-14', 'gross_amount' => '413.28'];
+
+        $exact = InvoiceMatcher::check($record, [
+            'invoice_date' => '2026-07-14',
+            'gross_amount' => '413.28',
+        ]);
+
+        if (!$exact['ok'] || $exact['agreed'] !== 2) {
+            return false;
+        }
+
+        // One day out. A tolerance would call this a match; it is exactly what
+        // a hit on a misread digit looks like, so it goes to a person.
+        $dayOut = InvoiceMatcher::check($record, [
+            'invoice_date' => '2026-07-15',
+            'gross_amount' => '413.28',
+        ]);
+
+        if ($dayOut['ok'] || $dayOut['signals'][0]['outcome'] !== InvoiceMatcher::DISAGREED) {
+            return false;
+        }
+
+        // One penny out, which is the commonest rounding difference there is
+        // and still not a match.
+        $pennyOut = InvoiceMatcher::check($record, [
+            'invoice_date' => '2026-07-14',
+            'gross_amount' => '413.27',
+        ]);
+
+        if ($pennyOut['ok'] || $pennyOut['signals'][1]['outcome'] !== InvoiceMatcher::DISAGREED) {
+            return false;
+        }
+
+        // A value missing on either side is not an agreement. It cannot be
+        // confirmed, so it is not confirmed.
+        $noDate = InvoiceMatcher::check($record, ['invoice_date' => null, 'gross_amount' => '413.28']);
+
+        if ($noDate['ok'] || $noDate['signals'][0]['outcome'] !== InvoiceMatcher::MISSING) {
+            return false;
+        }
+
+        $noRecordTotal = InvoiceMatcher::check(
+            ['document_date' => '2026-07-14', 'gross_amount' => null],
+            ['invoice_date' => '2026-07-14', 'gross_amount' => '413.28']
+        );
+
+        return !$noRecordTotal['ok'] && $noRecordTotal['signals'][1]['outcome'] === InvoiceMatcher::MISSING;
+    })());
+
+    check('a credit note is compared on the amount, not the sign', (static function (): bool {
+        // The sync keeps Clear Books' sign because it tells a credit note from
+        // a purchase refund. A page never prints one — a credit note says
+        // £240.00, not -£240.00 — so comparing signed figures would send every
+        // credit note and every refund to manual review for a convention.
+        // Dropping the sign is not a tolerance: the figure still has to be
+        // identical to the penny.
+        $result = InvoiceMatcher::check(
+            ['document_date' => '2026-08-01', 'gross_amount' => '-240.00'],
+            ['invoice_date' => '2026-08-01', 'gross_amount' => '240.00']
+        );
+
+        $stillExact = InvoiceMatcher::check(
+            ['document_date' => '2026-08-01', 'gross_amount' => '-240.00'],
+            ['invoice_date' => '2026-08-01', 'gross_amount' => '240.01']
+        );
+
+        return $result['ok'] && $result['agreed'] === 2 && !$stillExact['ok'];
+    })());
+
+    check('the total is compared as pence, never as floats', (static function (): bool {
+        // 0.1 + 0.2 is the reason. A float comparison on values that arrive as
+        // strings from two different systems is a bug that appears on somebody
+        // else's machine and nowhere else.
+        $result = InvoiceMatcher::check(
+            ['document_date' => '2026-07-14', 'gross_amount' => '0.30'],
+            ['invoice_date' => '2026-07-14', 'gross_amount' => 0.1 + 0.2]
+        );
+
+        return $result['ok'];
+    })());
+
+    /*
+     * The fork itself: same document, same extraction, same entity matches —
+     * only `documents.route` differs, and it decides where the matching stage
+     * sends it.
+     *
+     * This is the assertion that says the two flows really are one pipeline. If
+     * anybody ever splits them earlier again, the existing-invoice document
+     * here stops reaching the matching stage at all and this fails.
+     */
+    check('the matching stage forks on the route and nothing else', (static function (): bool {
+        $outcomes = [];
+        $ids      = [];
+
+        try {
+            foreach ([Document::ROUTE_NEW, Document::ROUTE_EXISTING] as $route) {
+                $documentId = Database::insert('documents', [
+                    'ingest_source'     => 'upload',
+                    'original_filename' => '__smoke_fork__.pdf',
+                    'ingested_at'       => date('Y-m-d H:i:s'),
+                    'status'            => Document::MATCHING,
+                    'route'             => $route,
+                ]);
+
+                $ids[] = $documentId;
+
+                // Deliberately unresolvable: no supplier name, no lines. A new
+                // invoice must stop for a person; an existing one must not,
+                // because nothing is being created from it.
+                Extraction::create($documentId, [
+                    'doc_type'      => 'bill',
+                    'invoice_date'  => '2026-07-14',
+                    'gross_amount'  => 413.28,
+                    'line_items'    => [],
+                    'supplier_match' => [],
+                ]);
+
+                $outcomes[$route] = (new App\Services\MatchStage())->run(Document::find($documentId) ?? []);
+            }
+        } finally {
+            foreach ($ids as $documentId) {
+                Database::run('DELETE FROM documents WHERE id = ?', [$documentId]);
+            }
+        }
+
+        return $outcomes[Document::ROUTE_NEW] === Document::NEEDS_REVIEW
+            && $outcomes[Document::ROUTE_EXISTING] === Document::EXISTING_INVOICE;
+    })());
+
+    check('a linked record is recorded as the kind Clear Books says it is', (static function (): bool {
+        // The endpoint a record came back on is a fact, not a classification —
+        // which is why the Existing Invoice route never asks anybody to confirm
+        // the credit-note question the New Invoice route does.
+        $bill   = DocumentType::forResource('bills');
+        $credit = DocumentType::forResource('purchases/creditNotes');
+
+        return $bill !== null && (string) $bill['clearbooks_resource'] === 'purchases/bills'
+            && $credit !== null && (string) $credit['type_key'] === 'credit_note';
+    })());
+
+    echo "\nThe duplicate check on the New Invoice route (against the real tables)\n";
+
+    check('documents knows the possible_duplicate status the code writes',
+        in_array(Document::POSSIBLE_DUPLICATE, $enumValues('documents', 'status'), true));
+
+    check('a cleared duplicate decision has somewhere to be recorded', (static function (): bool {
+        $columns = array_column(
+            Database::select('SHOW COLUMNS FROM documents'),
+            'Field'
+        );
+
+        return in_array('duplicate_cleared_at', $columns, true)
+            && in_array('duplicate_cleared_by', $columns, true);
+    })());
+
+    /*
+     * The comparison itself, and it is the same one Prompt 17 makes.
+     *
+     * `DuplicateMatcher` calls `InvoiceMatcher::day()` and
+     * `InvoiceMatcher::pence()` rather than spelling them again, so a
+     * disagreement between the two screens about the same pair of records is
+     * not possible. These assert the shared behaviour survives: no tolerance on
+     * either, the sign dropped from the total, pence rather than floats.
+     */
+    check('a duplicate is judged on the same comparisons as a link', (static function (): bool {
+        $document = ['matched_supplier_id' => '77', 'supplier_raw' => 'Acme Supplies'];
+
+        $invoice = [
+            'clearbooks_id'   => '99000201',
+            'document_number' => 'PUR0090001',
+            'purchase_type'   => ClearbooksInvoice::BILL,
+            'supplier_id'     => '77',
+            'document_date'   => '2026-07-14',
+            'reference'       => 'INV-2026/0042',
+            'gross_amount'    => '413.28',
+            'supplier_name'   => 'Acme Supplies Limited',
+            'synced_at'       => '2026-07-20 09:00:00',
+        ];
+
+        $score = static function (array $extraction) use ($document, $invoice): array {
+            $method = new ReflectionMethod(App\Services\DuplicateMatcher::class, 'score');
+            $method->setAccessible(true);
+
+            return $method->invoke(null, $document, $extraction, $invoice);
+        };
+
+        // All four. A genuine duplicate is literally the same invoice.
+        $all = $score([
+            'invoice_number' => 'INV-2026/0042',
+            'invoice_date'   => '2026-07-14',
+            'gross_amount'   => '413.28',
+        ]);
+
+        if (!$all['plausible'] || $all['agreed'] !== 4) {
+            return false;
+        }
+
+        // The reference written differently by two people is the same
+        // reference: case and separators fold, and nothing else does.
+        $spelled = $score([
+            'invoice_number' => 'inv 2026 0042',
+            'invoice_date'   => '2026-07-14',
+            'gross_amount'   => '413.28',
+        ]);
+
+        if ($spelled['agreed'] !== 4) {
+            return false;
+        }
+
+        // Leading zeros are NOT stripped from a supplier's reference, which is
+        // the one place this differs from the Clear Books document-number pass.
+        // Clear Books writes its own numbers to a fixed width; a supplier has
+        // no such convention, so 0042 and 42 are two references.
+        if (InvoiceMatcher::reference('0042') === InvoiceMatcher::reference('42')) {
+            return false;
+        }
+
+        // One penny out and one day out, both still near misses rather than
+        // matches — but the reference and the supplier carry it anyway, which
+        // is exactly the case this gate exists for: an extraction that misread
+        // one field on an invoice already in the accounts.
+        $misread = $score([
+            'invoice_number' => 'INV-2026/0042',
+            'invoice_date'   => '2026-07-15',
+            'gross_amount'   => '413.27',
+        ]);
+
+        return $misread['plausible'] && $misread['agreed'] === 2;
+    })());
+
+    /*
+     * The threshold, which is the judgement this whole feature turns on: **two
+     * signals, one of them the total or the reference.**
+     *
+     * The negative cases are the important ones. A business buys from the same
+     * supplier every week and receives invoices dated the same day all the
+     * time; a queue that stopped on either would cry wolf, and a queue that
+     * cries wolf gets cleared without being read — which is worse than not
+     * having built it.
+     */
+    check('one agreement is never enough, and never a supplier and a date', (static function (): bool {
+        $invoice = [
+            'clearbooks_id'   => '99000202',
+            'document_number' => 'PUR0090002',
+            'purchase_type'   => ClearbooksInvoice::BILL,
+            'supplier_id'     => '77',
+            'document_date'   => '2026-07-14',
+            'reference'       => 'THEIRS-1',
+            'gross_amount'    => '413.28',
+            'supplier_name'   => 'Acme Supplies Limited',
+            'synced_at'       => '2026-07-20 09:00:00',
+        ];
+
+        $score = static function (array $document, array $extraction) use ($invoice): array {
+            $method = new ReflectionMethod(App\Services\DuplicateMatcher::class, 'score');
+            $method->setAccessible(true);
+
+            return $method->invoke(null, $document, $extraction, $invoice);
+        };
+
+        $supplier = ['matched_supplier_id' => '77', 'supplier_raw' => 'Acme'];
+        $stranger = ['matched_supplier_id' => '99', 'supplier_raw' => 'Someone else'];
+
+        // The recurring monthly figure, on its own.
+        $totalOnly = $score($stranger, [
+            'invoice_number' => 'OURS-9',
+            'invoice_date'   => '2026-09-30',
+            'gross_amount'   => '413.28',
+        ]);
+
+        if ($totalOnly['plausible'] || $totalOnly['agreed'] !== 1) {
+            return false;
+        }
+
+        // A regular supplier and a date. Two agreements, and still not enough —
+        // this shape arrives with every week's delivery.
+        $regular = $score($supplier, [
+            'invoice_number' => 'OURS-9',
+            'invoice_date'   => '2026-07-14',
+            'gross_amount'   => '88.00',
+        ]);
+
+        if ($regular['plausible'] || $regular['agreed'] !== 2) {
+            return false;
+        }
+
+        // The same supplier and the same total is two agreements anchored on
+        // money, which is enough.
+        $anchored = $score($supplier, [
+            'invoice_number' => 'OURS-9',
+            'invoice_date'   => '2026-09-30',
+            'gross_amount'   => '413.28',
+        ]);
+
+        return $anchored['plausible'] && $anchored['agreed'] === 2;
+    })());
+
+    check('a value missing on either side is never an agreement', (static function (): bool {
+        $method = new ReflectionMethod(App\Services\DuplicateMatcher::class, 'score');
+        $method->setAccessible(true);
+
+        // An unresolved supplier says nothing either way, and must not count as
+        // a *disagreement* — that would quietly make every document whose
+        // supplier the matcher could not place un-flaggable.
+        $result = $method->invoke(
+            null,
+            ['matched_supplier_id' => null, 'supplier_raw' => 'Acme'],
+            ['invoice_number' => null, 'invoice_date' => '2026-07-14', 'gross_amount' => '413.28'],
+            [
+                'clearbooks_id' => '99000203', 'document_number' => 'PUR0090003',
+                'purchase_type' => ClearbooksInvoice::BILL, 'supplier_id' => '77',
+                'document_date' => '2026-07-14', 'reference' => null,
+                'gross_amount' => '413.28', 'supplier_name' => null,
+                'synced_at' => '2026-07-20 09:00:00',
+            ]
+        );
+
+        $outcomes = array_column($result['signals'], 'outcome', 'key');
+
+        return $outcomes['supplier'] === App\Services\DuplicateMatcher::MISSING
+            && $outcomes['reference'] === App\Services\DuplicateMatcher::MISSING
+            && $result['agreed'] === 2
+            && $result['plausible'];
+    })());
+
+    /*
+     * The narrowing, against real rows.
+     *
+     * Two things are asserted, and the second matters as much as the first: the
+     * total is compared **either sign**, because the sync keeps Clear Books'
+     * own sign and a page never prints one; and nothing is fetched on the
+     * supplier or the date alone, because that would be most of the table.
+     */
+    check('candidates are narrowed on the money and the reference only', (static function (): bool {
+        $ids = ['99000301', '99000302', '99000303'];
+
+        Database::run('DELETE FROM clearbooks_invoices WHERE clearbooks_id IN (?, ?, ?)', $ids);
+
+        try {
+            ClearbooksInvoice::upsert(ClearbooksInvoice::BILL, [
+                'id'                      => $ids[0],
+                'formattedDocumentNumber' => 'PUR0090011',
+                'date'                    => '2026-07-14',
+                'reference'               => 'SUPP/2026/77',
+                'grossAmount'             => 413.28,
+            ]);
+
+            // A credit note, whose stored gross is negative. Found on the same
+            // figure, because the sign is a convention rather than a difference.
+            ClearbooksInvoice::upsert(ClearbooksInvoice::CREDIT_NOTE, [
+                'id'                      => $ids[1],
+                'formattedDocumentNumber' => 'PUR0090012',
+                'date'                    => '2026-08-01',
+                'grossAmount'             => -240.00,
+            ]);
+
+            // Same date, same supplier, nothing else. Must not be fetched.
+            ClearbooksInvoice::upsert(ClearbooksInvoice::BILL, [
+                'id'                      => $ids[2],
+                'formattedDocumentNumber' => 'PUR0090013',
+                'date'                    => '2026-07-14',
+                'grossAmount'             => 1.11,
+            ]);
+
+            $ours = static fn (array $rows): array => array_values(array_intersect(
+                array_map(static fn (array $r): string => (string) $r['clearbooks_id'], $rows),
+                $ids
+            ));
+
+            // The reference, spelled differently.
+            $byReference = $ours(ClearbooksInvoice::findPossibleDuplicates('supp 2026 77', null));
+
+            if ($byReference !== [$ids[0]]) {
+                return false;
+            }
+
+            // The total, against a negative stored figure.
+            $byTotal = $ours(ClearbooksInvoice::findPossibleDuplicates(null, '240.00'));
+
+            if ($byTotal !== [$ids[1]]) {
+                return false;
+            }
+
+            // Neither: nothing comes back, and in particular not the row that
+            // shares only a date.
+            return $ours(ClearbooksInvoice::findPossibleDuplicates(null, null)) === []
+                && $ours(ClearbooksInvoice::findPossibleDuplicates('nothing-like-it', '0.07')) === [];
+        } finally {
+            Database::run('DELETE FROM clearbooks_invoices WHERE clearbooks_id IN (?, ?, ?)', $ids);
+        }
+    })());
+
+    /*
+     * The gate itself, driven through the real matching stage.
+     *
+     * Three documents, identical but for what makes each one different, run
+     * through `MatchStage::run()` rather than through a reimplementation of it.
+     * This is the assertion that says the feature is wired up at all: if the
+     * gate is ever moved, removed or short-circuited, the first row here stops
+     * reaching `possible_duplicate` and this fails.
+     */
+    check('the matching stage stops a new invoice that Clear Books already holds',
+        (static function (): bool {
+            $recordId = '99000401';
+            $ids      = [];
+
+            Database::run('DELETE FROM clearbooks_invoices WHERE clearbooks_id = ?', [$recordId]);
+
+            ClearbooksInvoice::upsert(ClearbooksInvoice::BILL, [
+                'id'                      => $recordId,
+                'formattedDocumentNumber' => 'PUR0090021',
+                'date'                    => '2026-07-14',
+                'reference'               => 'SMOKE-DUP-1',
+                'grossAmount'             => 413.28,
+            ]);
+
+            // `$extra` first, because `+` keeps the *left* operand for a key
+            // both sides have — the defaults are what is being overridden.
+            $run = static function (array $extra, array $fields) use (&$ids): string {
+                $documentId = Database::insert('documents', $extra + [
+                    'ingest_source'     => 'upload',
+                    'original_filename' => '__smoke_dedup__.pdf',
+                    'ingested_at'       => date('Y-m-d H:i:s'),
+                    'status'            => Document::MATCHING,
+                    'route'             => Document::ROUTE_NEW,
+                ]);
+
+                $ids[] = $documentId;
+
+                Extraction::create($documentId, $fields + [
+                    'doc_type'       => 'bill',
+                    'line_items'     => [],
+                    'supplier_match' => [],
+                ]);
+
+                return (new App\Services\MatchStage())->run(Document::find($documentId) ?? []);
+            };
+
+            try {
+                $duplicate = [
+                    'invoice_number' => 'SMOKE-DUP-1',
+                    'invoice_date'   => '2026-07-14',
+                    'gross_amount'   => 413.28,
+                ];
+
+                // 1. The reference, the date and the total all agree. Stopped —
+                //    and stopped *instead of* a disposition, which is the whole
+                //    point: this document's entities are deliberately
+                //    unresolvable, and it must not reach `needs_review` either.
+                if ($run([], $duplicate) !== Document::POSSIBLE_DUPLICATE) {
+                    return false;
+                }
+
+                // 2. Nothing like it. Straight through to the ordinary queue.
+                $new = $run([], [
+                    'invoice_number' => 'SMOKE-NEW-1',
+                    'invoice_date'   => '2026-02-02',
+                    'gross_amount'   => 17.50,
+                ]);
+
+                if ($new !== Document::NEEDS_REVIEW) {
+                    return false;
+                }
+
+                // 3. The same duplicate, already cleared by a person. The stamp
+                //    is what stops the re-match putting it straight back.
+                $cleared = $run(['duplicate_cleared_at' => date('Y-m-d H:i:s')], $duplicate);
+
+                if ($cleared !== Document::NEEDS_REVIEW) {
+                    return false;
+                }
+
+                // 4. The same duplicate on the *other* route. An existing-invoice
+                //    document is never asked this question: it carries a
+                //    Clearbooks Number, so it already knows which record it
+                //    belongs to, and `LinkStage`'s checksum is the stricter gate.
+                return $run(['route' => Document::ROUTE_EXISTING], $duplicate) === Document::EXISTING_INVOICE;
+            } finally {
+                foreach ($ids as $documentId) {
+                    Database::run('DELETE FROM documents WHERE id = ?', [$documentId]);
+                }
+
+                Database::run('DELETE FROM clearbooks_invoices WHERE clearbooks_id = ?', [$recordId]);
+            }
+        })());
+
+    /*
+     * There is nothing to configure about the duplicate check either — the same
+     * assertion §33 makes about the checksum, extended. A "duplicate" settings
+     * row appearing later would mean somebody had made the threshold adjustable
+     * without arguing for it, and a threshold that can be turned down to
+     * nothing is a check that quietly stops running.
+     */
+    check('the duplicate check has no settings behind it', (static function (): bool {
+        foreach (array_keys(Setting::summary()) as $key) {
+            if (str_contains((string) $key, 'duplicate') || str_contains((string) $key, 'dedup')) {
+                return false;
+            }
+        }
+
+        return !in_array('duplicates', array_keys(SettingSchema::SECTIONS), true);
     })());
 
     echo "\nReview and submission (against the real tables)\n";
@@ -2070,7 +3409,7 @@ ACME
         return true;
     })());
 
-    check('the write-back fields exist and are marked as produced', (static function (): bool {
+    check('the submission-produced fields exist and are marked as produced', (static function (): bool {
         foreach (['clearbooks_bill_id', 'clearbooks_document_number'] as $key) {
             $field = CustomField::find($key);
 
@@ -2127,7 +3466,7 @@ ACME
             return true;
         }
 
-        foreach (['paperless_doc_id', 'status', 'extraction_id', 'unresolved', 'review_notes', 'edited_at'] as $column) {
+        foreach (['ingest_source', 'status', 'extraction_id', 'unresolved', 'review_notes', 'edited_at'] as $column) {
             if (!array_key_exists($column, $rows[0])) {
                 return false;
             }
@@ -2185,8 +3524,8 @@ ACME
     })());
 
     // A supplier's recorded pattern survives a cache refresh, which overwrites
-    // everything the API supplies. It is the same property paperless_correspondent_id
-    // relies on, and it silently stops being true if upsert() ever widens.
+    // everything the API supplies. It is local knowledge Clear Books does not
+    // hold, and it silently stops being true if upsert() ever widens.
     check('a supplier route survives a cache refresh', (static function (): bool {
         $id = 'zzz-route-test';
 
@@ -2220,7 +3559,7 @@ ACME
         $stage   = new ReflectionMethod(App\Services\ExtractStage::class, 'variables');
         $stage->setAccessible(true);
 
-        $supplied = array_keys($stage->invoke(new App\Services\ExtractStage(), 'sample text'));
+        $supplied = array_keys($stage->invoke(new App\Services\ExtractStage(), 'sample text', []));
         $promised = PromptTemplate::EXTRACTION_VARIABLES;
 
         sort($supplied);
@@ -2329,15 +3668,15 @@ ACME
         return false;
     })());
 
-    check('select choices round-trip in Paperless shape', (static function (): bool {
+    check('select choices round-trip', (static function (): bool {
         $options = CustomField::selectOptions("First choice\nSecond choice\n\n");
 
         if ($options === null || count($options) !== 2) {
             return false;
         }
 
-        // Paperless holds them as {id, label}; storing the same shape means a
-        // value written back needs no translation.
+        // An id distinct from the label, so a choice can be renamed without
+        // orphaning the documents already stored against it.
         if ($options[0]['label'] !== 'First choice' || $options[0]['id'] !== 'first_choice') {
             return false;
         }
@@ -2345,23 +3684,47 @@ ACME
         return CustomField::optionLines(json_encode($options)) === "First choice\nSecond choice";
     })());
 
-    // Two InvoGrid fields on one Paperless field would overwrite each other on
-    // every document, because the write-back merges by Paperless field id.
-    check('no two fields are paired to the same Paperless field', (static function (): bool {
+    /*
+     * The edit form renders the key as read-only *text*, so a browser posts
+     * nothing for it. A controller that passed `''` through anyway would make
+     * `CustomField::update()`'s "the key cannot change" guard fire on every
+     * save — an empty key does not equal the stored one — and editing a field
+     * would be impossible while looking like a deliberate refusal. It was,
+     * until Prompt 15.
+     */
+    check('editing a field does not propose a key it was not given', (static function (): bool {
+        $field = CustomField::all()[0] ?? null;
+
+        if ($field === null) {
+            return true;
+        }
+
+        // The shape the edit form actually posts: no field_key at all.
+        $changed = CustomField::update((int) $field['id'], [
+            'label'       => (string) $field['label'],
+            'data_type'   => (string) $field['data_type'],
+            'prompt_hint' => (string) ($field['prompt_hint'] ?? ''),
+            'active'      => (int) $field['active'] === 1,
+            'source'      => (string) $field['source'],
+        ]);
+
+        // Nothing was altered, so nothing should be reported as changed either.
+        return $changed === [];
+    })());
+
+    // A key is the address every stored value lives at, so two fields sharing
+    // one would make last month's extraction ambiguous.
+    check('no two custom fields share a key', (static function (): bool {
         $seen = [];
 
         foreach (CustomField::all() as $field) {
-            if ($field['paperless_field_id'] === null) {
-                continue;
-            }
+            $key = (string) $field['field_key'];
 
-            $id = (int) $field['paperless_field_id'];
-
-            if (isset($seen[$id])) {
+            if (isset($seen[$key])) {
                 return false;
             }
 
-            $seen[$id] = true;
+            $seen[$key] = true;
         }
 
         return true;

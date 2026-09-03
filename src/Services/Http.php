@@ -9,7 +9,7 @@ use RuntimeException;
 /**
  * The one place InvoGrid talks to anything over HTTP.
  *
- * Every integration — Paperless, Clear Books, OpenAI, Anthropic — goes through
+ * Every integration — Clear Books, OpenAI, Anthropic — goes through
  * here rather than calling cURL itself, so a timeout, a retry rule or a proxy
  * setting is changed once. There is no vendor SDK anywhere in this application
  * and there is not going to be one.
@@ -298,17 +298,18 @@ final class Http
     /**
      * Download to a file rather than into memory.
      *
-     * @param array<string,string> $headers
-     */
-    /**
-     * `$maxBytes` aborts the transfer mid-flight rather than checking the size
-     * afterwards.
+     * Nothing calls this today — it was how the source PDF was fetched before
+     * documents were handed to InvoGrid directly. It is kept because it is a
+     * capability of this class rather than a piece of that integration: the
+     * next ingest route that pulls from a URL rather than a disk needs exactly
+     * this, and needs it to have the size guard below.
      *
-     * Checking afterwards is checking after the disk is already full. The far
-     * end here is Paperless, which is trusted-ish rather than trusted: it is a
-     * separate service on the network, and a misconfiguration or a wrong
-     * document id should not be able to take the application down by filling
-     * the volume it stores everything else on.
+     * `$maxBytes` aborts the transfer mid-flight rather than checking the size
+     * afterwards. Checking afterwards is checking after the disk is already
+     * full — a far end that is a separate service on the network is
+     * trusted-ish rather than trusted, and a misconfiguration there should not
+     * be able to take this application down by filling the volume it stores
+     * everything else on.
      *
      * @param array<string,string> $headers
      */

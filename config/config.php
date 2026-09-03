@@ -88,8 +88,8 @@ return [
         'path'    => $storage,
         'uploads' => $storage . DIRECTORY_SEPARATOR . 'uploads',
         'logs'    => $storage . DIRECTORY_SEPARATOR . 'logs',
-        // Source PDFs pulled from Paperless, and the page images rendered from
-        // them for the vision OCR stage.
+        // Source PDFs as ingested, and the page images rendered from them for
+        // the vision OCR stage. One directory per document under each.
         'pdf'     => $storage . DIRECTORY_SEPARATOR . 'pdf',
         'pages'   => $storage . DIRECTORY_SEPARATOR . 'pages',
     ],
@@ -101,11 +101,6 @@ return [
      * database. See App\Models\Setting::secret() and ::value().
      */
     'integrations' => [
-        'paperless' => [
-            'base_url'       => rtrim((string) Env::get('PAPERLESS_BASE_URL', ''), '/'),
-            'token'          => Env::get('PAPERLESS_TOKEN', ''),
-            'webhook_secret' => Env::get('INVOGRID_WEBHOOK_SECRET', ''),
-        ],
         'clearbooks' => [
             'base_url'      => rtrim((string) Env::get('CLEARBOOKS_BASE_URL', 'https://api.clearbooks.co.uk'), '/'),
             'client_id'     => Env::get('CLEARBOOKS_CLIENT_ID', ''),
@@ -127,15 +122,13 @@ return [
 
     'uploads' => [
         /*
-         * A ceiling on one PDF fetched from Paperless.
+         * The ceiling on an ingested PDF is not here: it is the
+         * `ingest_max_upload_mb` setting, so an administrator can change it
+         * without shell access. See App\Services\Ingest\Ingestor.
          *
-         * Not an upload in the browser sense — nobody uploads a PDF to
-         * InvoGrid, they arrive from Paperless over the API — but it is the
-         * one thing a remote service can write to this disk, and the transfer
-         * is aborted the moment it goes over. 100MB is far above any real
-         * scanned invoice and far below "fills the volume".
+         * What is left is the logo, which is not a document and has nothing to
+         * do with ingest.
          */
-        'max_pdf_bytes' => (int) Env::get('MAX_PDF_BYTES', (string) (100 * 1024 * 1024)),
 
         // A logo is a logo, not a photograph.
         'max_logo_bytes' => 2 * 1024 * 1024,

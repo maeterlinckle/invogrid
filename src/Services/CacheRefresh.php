@@ -105,9 +105,10 @@ final class CacheRefresh
             // Archiving is how a supplier is normally retired in Clear Books —
             // far more common than a hard delete. An archived one is left out
             // of $seen and so is deactivated below by exactly the same path as
-            // one that has gone altogether: the cached row and its Paperless
-            // link survive, and the correspondent sync gets its signal either
-            // way. Nothing else has to know which of the two happened.
+            // one that has gone altogether: the cached row survives, keeping the
+            // local knowledge held against it and any document already matched
+            // to it resolvable. Nothing else has to know which of the two
+            // happened.
             if (($row['archived'] ?? false) === true) {
                 continue;
             }

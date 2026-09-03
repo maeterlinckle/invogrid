@@ -71,11 +71,11 @@ if (flag($argv, 'status')) {
     } else {
         foreach ($pending as $job) {
             printf(
-                "  #%-5d %-9s doc %-5d (paperless %-6d) due %s attempt %d%s\n",
+                "  #%-5d %-9s doc %-5d %-28s due %s attempt %d%s\n",
                 $job['id'],
                 $job['stage'],
                 $job['document_id'],
-                $job['paperless_doc_id'],
+                str_limit((string) ($job['original_filename'] ?? ''), 28),
                 $job['available_at'],
                 $job['attempts'],
                 $job['last_error'] === null ? '' : '  last error: ' . str_limit((string) $job['last_error'], 80)

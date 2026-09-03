@@ -96,7 +96,7 @@ final class DocumentEvent
         $limit = max(1, min(100, $limit));
 
         return Database::select(
-            'SELECT e.*, d.paperless_doc_id
+            'SELECT e.*, d.original_filename
                FROM document_events e
                JOIN documents d ON d.id = e.document_id
               WHERE e.status = ?

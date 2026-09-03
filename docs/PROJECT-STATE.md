@@ -3,8 +3,8 @@
 A factual snapshot of what exists in the codebase **right now**, not a changelog.
 Read it before starting work; rewrite the parts that changed when finishing.
 
-**Last updated:** the Application settings and Activity log screens — the last
-two `soon` entries in the navigation.
+**Last updated:** the duplicate check on the New Invoice route — the gate at the
+end of the matching stage, and the queue that works it.
 
 ---
 
@@ -18,8 +18,8 @@ two `soon` entries in the navigation.
 | Themed application shell: nav, light/dark, logo/monogram, footer | done |
 | Dashboard (counts by pipeline status, recent documents, setup gaps) | done |
 | Verified end to end against a live MariaDB 12.3 | done |
-| Paperless API client (`Http`, `PaperlessClient`) | done |
-| Webhook receiver, idempotent registration | done |
+| HTTP client with timeouts, retries and `Retry-After` (`Http`) | done |
+| Ingest abstraction, and a manual upload route on it | done |
 | Queue + cron worker, retries, backoff | done |
 | Document list and detail, retry / ignore | done |
 | PDF → page images (`PdfRenderer`, poppler) | done |
@@ -33,15 +33,14 @@ two `soon` entries in the navigation.
 | Clear Books API client (OAuth2, PKCE, pagination) | done |
 | Cached reference lists, cron refresh + "refresh now" | done |
 | Matching stage, deterministic name fallback, `entity_matches` | done |
-| Supplier → Paperless correspondent sync | done |
-| `/admin/clearbooks`: connect, cache state, refresh, sync | done |
+| `/admin/clearbooks`: connect, cache state, refresh | done |
 | Review queue: triage list and the editable detail screen | done |
 | Creating a supplier in Clear Books from a confirmed form | done |
 | Submission to Clear Books, PDF attached to the record | done |
-| Paperless write-back: correspondent, title, content, type, fields, tags, note | done |
+| Submission-produced fields recorded on the extraction | done |
 | "Open in Clear Books" in one reused window | done |
 | Credit note vs purchase refund, with a human confirming | done |
-| Custom fields screen, with Paperless pairing and creation | done |
+| Custom fields screen: define, edit, take out of use | done |
 | Prompts screen: edit, version, roll back, reset to default | done |
 | Users screen: create, edit, role, deactivate, reset password | done |
 | Forced password change after an admin sets one | done |
@@ -57,8 +56,17 @@ two `soon` entries in the navigation.
 | README complete enough to deploy from scratch | done |
 | `install.sh` and `manage.sh`, modelled on the sibling projects | done |
 | Application settings screen, with connection tests | done |
-| Paperless document type mapping, editable rather than SQL | done |
+| Paperless removed entirely, replaced by native ingest | done |
 | Full activity log: filters, paging, no route that writes | done |
+| Local copy of Clear Books' purchase documents, synced on a schedule | done |
+| The Existing / New Invoice branch, decided at transcription | done |
+| Existing Invoice route: both flows one pipeline, exact checksum, PDF attached | done |
+| Existing Invoice queue: link by hand, push to New, delete | done |
+| Duplicate check against the synced Clear Books invoices | done |
+| Duplicate queue: the side-by-side, delete or push it on | done |
+| Desktop-first layout across every document-facing screen | done |
+| Page images shown by default, with the PDF a button underneath | done |
+| Per-field issue marks, replacing the top-of-page "things to check" banner | done |
 
 A document now runs the whole way on its own when everything resolves, and a
 person finishes the ones that do not. The pipeline itself still stops at
@@ -99,9 +107,12 @@ shared code, no submodule, no shared database and no path reference back to it.
 Do not add one.
 
 Deliberate visual differences from Kitwell: indigo accent (`#4338ca` /
-`#a5b4fc`) instead of blue; desktop nav bar at `900px` instead of `1150px`
-(three top-level items, not six). Everything else — spacing scale, 17px body
-type, 44px tap targets, component vocabulary — is the same on purpose.
+`#a5b4fc`) instead of blue. The desktop nav bar was at `900px` instead of
+`1150px` while this menu had three top-level items; **a queue per question has
+taken it to six, which is Kitwell's count, so it is back at `1150px`** and the
+difference that justified the lower breakpoint has gone (§9). Everything else —
+spacing scale, 17px body type, 44px tap targets, component vocabulary — is the
+same on purpose.
 
 ---
 
@@ -118,22 +129,48 @@ by `App\Core\Migrator`, tracked in a `migrations` table.
 - `006_ocr_structured_output.sql` — split the OCR reply into columns.
 - `007_extraction_support.sql` — `extractions.supplier_match`, the two annotation custom fields.
 - `008_extraction_prompts.sql` — the three extraction prompts plus the custom-field fallback.
-- `009_clearbooks_connection.sql` — the consent-flow settings and the two sync switches.
-- `015_diagnostics.sql` — `document_events.context`, and the two `stuck_*`
-  thresholds, so a failure can be read on the page and a stalled document
-  is noticed at all.
-- `014_user_management.sql` — `users.must_change_password` and
-  `users.password_changed_at`, which is what makes an admin-set password a
-  moment rather than a state.
-- `013_prompt_origin.sql` — `prompt_templates.origin`, so "reset to default"
-  knows which versions shipped.
-- `012_classification_reasoning.sql` — `extractions.doc_type_reason` and
-  `extract_lines` v3, which asks the model to say what decided its answer.
+- `009_clearbooks_connection.sql` — the consent-flow settings, and two sync
+  switches since removed by `017`.
+- `010_review_and_submission.sql` — `custom_fields.source`, the two
+  submission-produced fields, `extractions.edited_at`/`edited_by`, and settings
+  since removed by `017`.
 - `011_credit_notes_and_refunds.sql` — the corrected credit-note sign, the
   `purchase_refund` type, `requires_confirmation`, `default_credit_route`,
   the confirmation stamps, and `extract_lines` v2.
-- `010_review_and_submission.sql` — `custom_fields.source`, the two write-back
-  fields, `extractions.edited_at`/`edited_by`, and the write-back settings.
+- `012_classification_reasoning.sql` — `extractions.doc_type_reason` and
+  `extract_lines` v3, which asks the model to say what decided its answer.
+- `013_prompt_origin.sql` — `prompt_templates.origin`, so "reset to default"
+  knows which versions shipped.
+- `014_user_management.sql` — `users.must_change_password` and
+  `users.password_changed_at`, which is what makes an admin-set password a
+  moment rather than a state.
+- `015_diagnostics.sql` — `document_events.context`, and the two `stuck_*`
+  thresholds, so a failure can be read on the page and a stalled document
+  is noticed at all.
+- `016_clearbooks_invoices.sql` — `clearbooks_invoices`, plus the sync interval
+  and the last-run record. The local copy of what Clear Books already holds,
+  which the duplicate check in Prompts 17 and 18 will be asked about.
+- `017_remove_paperless.sql` — the pivot. Drops every column that existed only
+  to talk to Paperless, renames the three that held real data under a Paperless
+  name (`documents.supplier_raw`, `documents.matched_supplier_id`,
+  `extractions.document_title`), adds the four `ingest_*` columns and
+  `ingest_max_upload_mb`, deletes the Paperless settings rows, and re-seeds
+  `extract_header` and `extract_supplier` at a new version. See §12.
+- `018_invoice_routing.sql` — the Existing / New Invoice branch. Adds the
+  `existing_invoice` status and `documents.route`, promotes
+  `ocr_results.clearbooks_number` / `project_code` / `annotations_json`, and
+  re-seeds `ocr` (v3, with the `### Notes` section removed), `extract_header`
+  and `extract_custom_fields`. See §32.
+- `019_existing_invoice_linking.sql` — the Existing Invoice route. Adds the
+  `needs_link` status, and nothing else: there is no new table (the link is a
+  `submissions` row) and nothing to configure (the checksum is exact). It also
+  moves the fork Prompt 16 put at the transcription to the end of matching, so
+  both flows run the same pipeline. See §33.
+- `020_duplicate_check.sql` — the duplicate gate on the New Invoice route. Adds
+  the `possible_duplicate` status and `documents.duplicate_cleared_at` /
+  `duplicate_cleared_by`. No new table — the candidates are recomputed when the
+  queue screen is opened — and no settings row: the natural off switch is an
+  unsynced `clearbooks_invoices`. See §34.
 
 ### Tables in use
 
@@ -142,15 +179,16 @@ by `App\Core\Migrator`, tracked in a `migrations` table.
 | `users` | `username` (unique, lower-cased), `display_name`, `email`, `password_hash`, `role` ENUM(viewer,reviewer,admin), `active`, `last_login_at`, `last_login_ip` |
 | `login_attempts` | throttling; `username`, `ip_address`, `successful`, `attempted_at` |
 | `settings` | `setting_key` PK, `setting_value`, `is_secret`, `updated_by` |
-| `document_types` | `type_key` (unique), `label`, `clearbooks_resource`, `amount_sign`, `paperless_document_type_id`, `sort_order`, `active` |
+| `document_types` | `type_key` (unique), `label`, `clearbooks_resource`, `amount_sign`, `sort_order`, `active` |
 | `prompt_templates` | `template_key` + `version` unique, `content`, `is_active`, `updated_by` |
-| `custom_fields` | `field_key` unique, `label`, `data_type`, `select_options`, `paperless_field_id`, `prompt_hint`, `sort_order`, `active` |
-| `documents` | `paperless_doc_id` unique, `status`, `doc_type`, `correspondent_raw`, `correspondent_matched_supplier_id`, `pdf_path`, `page_count`, `failed_stage`, `error_message`, `attempts`, `locked_at` |
+| `custom_fields` | `field_key` unique, `label`, `data_type`, `select_options`, `prompt_hint`, `source` ENUM(extracted, submission), `sort_order`, `active` |
+| `documents` | `ingest_source`, `original_filename`, `ingested_by`, `ingested_at`, `status`, `route` ENUM(new_invoice, existing_invoice) NULL, `doc_type`, `supplier_raw`, `matched_supplier_id`, `pdf_path`, `page_count`, `failed_stage`, `error_message`, `attempts`, `locked_at`, `duplicate_cleared_at`/`duplicate_cleared_by` (§34 — NULL means nobody was ever asked, which is not the same as "not a duplicate") |
 | `document_pages` | `document_id` + `page_number` unique, `image_path`, `width`, `height` |
-| `ocr_results` | `document_id`, `llm_provider`, `llm_model`, `raw_text` (verbatim reply), `ocr_text` (transcription alone), `structured_json`, `notes_present`, `prompt_template_id`, token counts, `duration_ms` |
-| `extractions` | one row per reading; header columns, `vat_treatment`/`supplier_match`/`line_items`/`custom_field_values`/`confidence`/`review_notes` as JSON, `needs_review` |
+| `ocr_results` | `document_id`, `llm_provider`, `llm_model`, `raw_text` (verbatim reply), `ocr_text` (transcription alone), `structured_json` (everything else), `notes_present`, `clearbooks_number` (indexed — the branch tests it), `project_code`, `annotations_json`, `prompt_template_id`, token counts, `duration_ms` |
+| `extractions` | one row per reading; header columns including `document_title`, `vat_treatment`/`supplier_match`/`line_items`/`custom_field_values`/`confidence`/`review_notes` as JSON, `needs_review` |
 | `entity_matches` | `extraction_id`, `entity_type` ENUM(supplier, account_code, vat_rate, vat_treatment), `line_index`, `raw_value`, `matched_id`, `matched_name`, `matched_via` ENUM(llm, code_fallback, manual), `confidence`, `status` ENUM(matched, unmatched, created, rejected), `resolved_by`, `resolved_at` |
-| `clearbooks_cache` | `entity_type` + `remote_id` unique, `name`, `normalised_name` (indexed), `raw_json`, `paperless_correspondent_id`, `active`, `cached_at` |
+| `clearbooks_cache` | `entity_type` + `remote_id` unique, `name`, `normalised_name` (indexed), `raw_json`, `default_credit_route`, `active`, `cached_at` |
+| `clearbooks_invoices` | what Clear Books already holds: `clearbooks_id` unique across both endpoints, `purchase_type` ENUM(bill, creditNote), `document_number`, `supplier_id`, `document_date`, `due_date`, `reference`, `gross_amount`, `raw_json`, `synced_at`. Rows are **deleted** when they leave Clear Books, not deactivated |
 | `submissions` | `document_id`, `clearbooks_type`, `clearbooks_id`, `clearbooks_url`, `status`, `submitted_by`, `response_json` |
 | `document_events` | what the *machine* did: `stage`, `status` ENUM(started, succeeded, failed, skipped), `message`, `duration_ms` |
 | `pipeline_jobs` | the work queue: `stage`, `status` ENUM(queued, running, done, failed), `attempts`, `available_at`, `last_error` |
@@ -171,19 +209,25 @@ by `App\Core\Migrator`, tracked in a `migrations` table.
 
 - **`settings` uses `setting_key` / `setting_value`**, not `key` / `value`, to
   avoid reserved words.
-- **The Paperless document-type mapping lives in `document_types`**
-  (`paperless_document_type_id`) rather than as a settings row. Prompt 1 listed
-  it under settings; putting it beside the type keeps "add a document type" to
-  one insert, which is what the "new type is a data change" requirement asks
-  for. The Settings screen will still be where it is edited.
+- **What the Paperless removal did to the schema**, in one place, because a
+  reader coming to this cold will wonder. `017_remove_paperless.sql` **drops**
+  `documents.paperless_doc_id`, `clearbooks_cache.paperless_correspondent_id`,
+  `custom_fields.paperless_field_id` and
+  `document_types.paperless_document_type_id` rather than leaving them unused:
+  a nullable column nobody ever populates again is exactly the kind of thing a
+  future reader assumes still works. Two columns that held real data were
+  **renamed** instead, because only the vocabulary had gone —
+  `documents.correspondent_raw` to `supplier_raw`,
+  `documents.correspondent_matched_supplier_id` to `matched_supplier_id`, and
+  `extractions.paperless_title` to `document_title`.
 - **`entity_matches.line_index`** was added beyond the specified columns: account
   codes and VAT rates are per line item, so without it two lines guessing
   different codes cannot be told apart.
 - **`document_events` and `pipeline_jobs`** were added beyond the specified
-  tables. The queue exists because a webhook cannot be held open for an LLM call;
-  the event log is what makes a failed stage retryable rather than lost. Both are
+  tables. The queue exists because an upload cannot be held open for an LLM
+  call; the event log is what makes a failed stage retryable rather than lost. Both are
   here now to avoid a migration onto a live database later.
-- `documents.correspondent_matched_supplier_id` holds a Clear Books remote id.
+- `documents.matched_supplier_id` holds a Clear Books remote id, not a row here.
 
 ---
 
@@ -192,15 +236,55 @@ by `App\Core\Migrator`, tracked in a `migrations` table.
 `documents.status`, defined in `App\Models\Document`:
 
 ```
-received → ocr_pending → ocr_done → extracting → extracted
-         → matching → needs_review → ready_to_submit → submitted
+received → ocr_pending → ocr_done → extracting → extracted → matching ─┬→ possible_duplicate ┐
+                                                                       │        ↑____________│ (cleared, re-matched)
+                                                                       ├→ needs_review
+                                                                       │  → ready_to_submit → submitted
+                                                                       │
+                                                                       └→ existing_invoice ─┬→ submitted
+                                                                                            └→ needs_link
 ```
 
+- **`matching` has four successors, and two of them are branches** — see §32,
+  §33 and §34. The route decides the first (`existing_invoice`); the duplicate
+  check decides the second (`possible_duplicate`), and it runs only on the New
+  Invoice arm, before the ready/needs-review decision rather than after it.
+- **`possible_duplicate` has exactly one way on, and it is back to `matching`.**
+  Confirming a document is genuinely new stamps `documents.duplicate_cleared_at`
+  and re-runs the stage, which takes a different exit because the gate reads
+  that column. The other answer is deleting the document, which is not a
+  transition. Nothing may move a document *into* it by hand — `failed` does not
+  list it, though it lists every other waiting status — because the screen it
+  waits on is a comparison against records the matcher found, and a document
+  parked there by a dropdown would arrive at a page with nothing on one side of
+  it. `tests/smoke.php` asserts that `matching` is the only source.
+  **Both flows run every stage above it**: a scan of an invoice already in Clear
+  Books is extracted and matched exactly like a new one, because it is a
+  document somebody will search for and report on whether or not anything is
+  ever posted from it. `documents.route` is decided at OCR and read at the
+  matching stage's *exit*.
+- **Both flows end at `submitted`**, which is deliberate and is what
+  `documents.route` exists to disambiguate — see §33. One arm creates a record
+  in Clear Books; the other attaches a PDF to one that was already there.
 - `failed` is reachable from every working state, and a retry moves the document
   back to the head of the stage that failed.
 - `ignored` is a human decision, reachable from anywhere; `ignored → received`
   puts a document back into the pipeline.
 - `needs_review ⇄ matching` so a resolved entity can be re-matched.
+- `needs_review → existing_invoice` and `ready_to_submit → existing_invoice` let
+  a person say "this is a scan of something already in Clear Books" from the
+  document page. The reverse gesture is `needs_link → matching`, which the
+  queue's "post it as a new invoice" makes by flipping the route and re-running
+  the stage — so the document lands where that stage decides rather than
+  wherever a dropdown was set to.
+- `needs_link → existing_invoice` is "look the number up again", which is what
+  the queue's Link action does when the number is left as it was — the invoice
+  sync runs on a schedule, and the commonest reason a number matched nothing is
+  a record entered in Clear Books since the last run.
+- **`ocr_pending → existing_invoice` is deliberately *not* legal**, and
+  `tests/smoke.php` asserts its absence. It was legal in Prompt 16, when the
+  branch skipped extraction; a document that could still reach the Existing
+  Invoice flow without being extracted is the thing §33 exists to prevent.
 
 ### Stages, and the working statuses
 
@@ -214,12 +298,37 @@ machine has one) and the status it produces (`to`).
 | `ocr` | `ocr_pending` | — | `ocr_done` | `OcrStage` |
 | `extract` | `ocr_done` | `extracting` | `extracted` | `ExtractStage` |
 | `match` | `extracted` | `matching` | `needs_review` | `MatchStage` |
+| `link` | `existing_invoice` | — | `needs_link` | `LinkStage` |
 
-`match` is the first stage whose handler can return something other than its
-declared `to`: `ready_to_submit` when everything resolved. The registry records
-the conservative outcome because that is the one `Document::retryStatusFor()`
-and the smoke test's consistency check have to be right about. Both
-destinations are legal from `matching`, and the test asserts it.
+**Two stages return something other than their declared `to`.** `match` returns
+`ready_to_submit` when everything resolved, `existing_invoice` when
+`documents.route` says so — that outcome is the branch, and it is why the
+Existing Invoice flow costs nothing in duplicated pipeline — and
+`possible_duplicate` when a New Invoice document looks like something Clear
+Books already holds (§34). `link` returns `submitted` when the Clearbooks Number
+found exactly one record whose date and total agreed exactly.
+
+**There is no `dedup` stage**, and that is deliberate: the check wants
+`documents.matched_supplier_id`, which the matching stage is what produces, so
+running it earlier would deny it the strongest signal it has. It is the last
+thing `MatchStage::run()` does on the New Invoice arm. `tests/smoke.php` asserts
+that nothing in `STAGES` consumes `possible_duplicate` — a stage picking it up
+would find the same records and queue itself for ever.
+
+The registry records the **conservative** outcome in each case — the one where a
+document stops and waits — because that is the one `Document::retryStatusFor()`
+and the smoke test's consistency check have to be right about. Every alternative
+destination is legal from the status it leaves, and the test asserts each one.
+
+`ocr` has a single destination. It still decides the route — it is the stage
+that reads the handwritten number — but it writes that to `documents.route` and
+sends every document on to be extracted.
+
+`needs_link` and `possible_duplicate` are statuses a document *waits* at, not
+ones a stage consumes, so neither has a `STAGES` entry and
+`Pipeline::stageFor()` returns null for both — the same arrangement
+`needs_review` has, and the same one `existing_invoice` had while nothing ran
+it. Every registered stage has a handler; the smoke test asserts it.
 
 `during` is what `extracting` and `matching` are **for**, and getting this wrong
 was a real bug caught by `tests/smoke.php`: the registry originally went
@@ -233,6 +342,17 @@ test now enforces:
 A stage that has a `during` status accepts a document back **in either
 status** — a worker killed mid-extraction leaves the document in `extracting`,
 and the released job has to pick it up without a human pressing Retry.
+
+**`Pipeline::stageFor()` answers on `during` as well as on `from`**, which is
+the other half of that and was a real gap until Prompt 18 walked into it. The
+document page's "Reset to" control offers every status the state machine allows;
+with `during` unanswered, choosing `matching` moved the document and enqueued
+nothing, stranding it until the dashboard's stuck list noticed. It mattered
+little while `matching` was one option among several — and a great deal once
+`possible_duplicate` existed, because `matching` is the only status it can move
+on to (§34). `from` is checked across every stage before `during` is, so a
+status that is one stage's `during` cannot shadow another's `from`; the smoke
+test asserts no status is both.
 
 `Document::STATUSES` (ordered), `Document::TRANSITIONS`, `Document::LABELS` and
 `Document::canTransition()` are the single source of truth. Nothing outside that
@@ -249,9 +369,10 @@ class may compare status strings it wrote out itself.
 | GET | `/login` | `AuthController::showLogin` | `guest` |
 | POST | `/login` | `AuthController::login` | `guest`, `csrf` |
 | POST | `/logout` | `AuthController::logout` | `auth`, `csrf` |
-| POST | `/webhook/paperless` | `WebhookController::receive` | *none — shared secret* |
 | GET | `/` | `DashboardController::index` | `auth` |
 | GET | `/documents` | `DocumentController::index` | `can:documents.view` |
+| GET | `/documents/upload` | `UploadController::form` | `can:documents.upload` |
+| POST | `/documents/upload` | `UploadController::store` | `can:documents.upload`, `csrf` |
 | GET | `/documents/{id}` | `DocumentController::show` | `can:documents.view` |
 | GET | `/documents/{id}/pdf` | `DocumentController::pdf` | `can:documents.view` |
 | GET | `/documents/{id}/page/{page}` | `DocumentController::page` | `can:documents.view` |
@@ -264,6 +385,8 @@ class may compare status strings it wrote out itself.
 | POST | `/admin/clearbooks/disconnect` | `ClearBooksController::disconnect` | `can:settings.manage`, `csrf` |
 | POST | `/admin/clearbooks/refresh` | `ClearBooksController::refresh` | `can:settings.manage`, `csrf` |
 | POST | `/admin/clearbooks/sync` | `ClearBooksController::sync` | `can:settings.manage`, `csrf` |
+| POST | `/admin/clearbooks/sync-invoices` | `ClearBooksController::syncInvoices` | `can:settings.manage`, `csrf` |
+| POST | `/admin/clearbooks/invoice-schedule` | `ClearBooksController::invoiceSchedule` | `can:settings.manage`, `csrf` |
 | POST | `/admin/clearbooks/supplier-route` | `ClearBooksController::supplierRoute` | `can:settings.manage`, `csrf` |
 | GET | `/admin/fields` | `FieldController::index` | `can:fields.manage` |
 | GET | `/admin/fields/new` | `FieldController::edit` | `can:fields.manage` |
@@ -303,6 +426,15 @@ class may compare status strings it wrote out itself.
 | POST | `/review/{id}/entity/{matchId}/create` | `ReviewController::createEntity` | `can:entities.create`, `csrf` |
 | POST | `/review/{id}/submit` | `ReviewController::submit` | `can:documents.submit`, `csrf` |
 | POST | `/documents/{id}/resubmit` | `DocumentController::resubmit` | `role:admin`, `csrf` |
+| GET | `/existing` | `ExistingInvoiceController::index` | `can:queue.view` |
+| GET | `/existing/{id}` | `ExistingInvoiceController::show` | `can:queue.view` |
+| POST | `/existing/{id}/link` | `ExistingInvoiceController::link` | `can:review.resolve`, `csrf` |
+| POST | `/existing/{id}/new-invoice` | `ExistingInvoiceController::pushToNew` | `can:review.resolve`, `csrf` |
+| POST | `/existing/{id}/delete` | `ExistingInvoiceController::delete` | `can:documents.delete`, `csrf` |
+| GET | `/duplicates` | `DuplicateController::index` | `can:queue.view` |
+| GET | `/duplicates/{id}` | `DuplicateController::show` | `can:queue.view` |
+| POST | `/duplicates/{id}/not-duplicate` | `DuplicateController::notDuplicate` | `can:review.resolve`, `csrf` |
+| POST | `/duplicates/{id}/delete` | `DuplicateController::delete` | `can:documents.delete`, `csrf` |
 
 `/admin/fields/new` and `/admin/users/new` are declared **before** their
 numeric forms, so "new" is never matched as an id.
@@ -310,7 +442,22 @@ numeric forms, so "new" is never matched as an id.
 Viewing the queue is `queue.view`, which a viewer has; everything that changes
 something is `review.resolve` or higher, and **creating a record in somebody
 else's accounts has its own capability** (`entities.create`) because it is a
-different kind of act from correcting a date on a screen.
+different kind of act from correcting a date on a screen. `/existing` is the
+same split: the Existing Invoice queue is its own screen because a document on
+that flow has no extraction to correct, and **deleting a document has its own
+capability** (`documents.delete`) for the same reason `entities.create` does.
+
+`/duplicates` is the third queue and the same split again — see §34. It shares
+`documents.delete` with `/existing` rather than adding a fourth capability: it
+is the same act on the same kind of document, reached from the other side.
+
+`/existing/{id}` and every action under it **redirect a document that is not at
+`needs_link`**, checked in the controller rather than only in the template: each
+one changes something, and a stale tab is a real way to reach a document that
+has since been linked, deleted, or sent the other way. `/duplicates/{id}` does
+the same against `possible_duplicate`, and additionally 404s a document with no
+extraction — the gate cannot fire without one, so a document there without one
+has had the row removed from underneath it.
 
 `/admin/clearbooks/callback` is the **one signed-in route without `csrf`**, and
 deliberately: it is a redirect from Clear Books, which has no token to carry. A
@@ -322,10 +469,12 @@ a stale verifier invites a replay.
 Routes are declared in `routes/web.php`. Middleware is named on the route, never
 checked inside a controller.
 
-The webhook receiver is the one route with no middleware at all. It is not a
-browser form, so CSRF is meaningless on it; the shared secret in
-`paperless_webhook_secret` is what authenticates the caller. Do not put `csrf`
-on it — Paperless has no session to carry a token in.
+**There is no unauthenticated way into this application any more.** The webhook
+receiver was the one route with no middleware at all, authenticated by a shared
+secret rather than a session; it went with Paperless. Every route that accepts
+input is now behind `auth`, and every state-changing one behind `csrf`. The
+`` list in the smoke test is down to four entries, and a fifth
+appearing there should be argued for rather than added.
 
 **No path is reserved any more.** `/admin/settings` and `/admin/activity` were
 the last two and are built. The review queue was reserved as `/queue` and is
@@ -355,7 +504,7 @@ and capabilities are cumulative up that order.
 | Role | Adds |
 |---|---|
 | `viewer` | `documents.view`, `queue.view` |
-| `reviewer` | `documents.retry`, `review.resolve`, `entities.create`, `documents.submit` |
+| `reviewer` | `documents.upload`, `documents.retry`, `review.resolve`, `entities.create`, `documents.submit`, `documents.delete` |
 | `admin` | `settings.manage`, `prompts.manage`, `fields.manage`, `users.manage`, `audit.view` |
 
 Always check `Auth::can('x')` / the `can('x')` template helper, or
@@ -368,6 +517,16 @@ change if the model grows.
 and is what the users screen renders. A hand-written table in a template would
 describe a permission model the application does not enforce within one release.
 
+**`documents.delete` is the one capability held by a reviewer that destroys
+something.** It is the Existing Invoice queue's third action and the duplicate
+queue's second, and both are reviewers' screens — a resolution its own audience
+cannot reach is a resolution that does not get used, and the alternative on
+either queue is a database filling with duplicate scans nobody will look at
+again. The controls are the required reason and an audit row that outlives the
+document. It is a **separate capability** rather than part of `review.resolve`
+precisely so that moving it to `admin` is one line in `Auth::CAPABILITIES` and
+nothing else.
+
 **Prompt 10 named the middle role "Processor"; it is `reviewer` here.** The DB
 enum, `Auth::ROLES`, every `can:` string and a year of audit entries already say
 reviewer, the screen it names is called the Review queue, and renaming it buys
@@ -377,11 +536,9 @@ a word. Judgement was explicitly delegated on the naming.
 
 `tests/smoke.php` walks `Router::routes()` and fails if:
 
-- any route lacks `auth`/`can`/`role` and is not on the five-item
-  `$deliberatelyOpen` list (health, branding, the webhook, the two login
-  routes);
-- any non-GET route lacks `csrf`, other than the webhook and the Clear Books
-  callback;
+- any route lacks `auth`/`can`/`role` and is not on the four-item
+  `$deliberatelyOpen` list (health, branding, the two login routes);
+- any non-GET route lacks `csrf`, other than the Clear Books callback;
 - any `can:` names a capability no role holds — a typo would otherwise lock
   everybody out silently, because the gate would simply always say no.
 
@@ -420,10 +577,12 @@ without a gate fails here rather than being found by whoever finds it.
 | **cURL wrapper: timeouts, no redirects, error translation** | `src/Services/Http.php` |
 | One HTTP response, `json()`, `errorSummary()` | `src/Services/HttpResponse.php` |
 | DNS/connect/TLS/timeout failure (worth retrying) | `src/Services/HttpTransportException.php` |
-| **Paperless-ngx v3 REST client** | `src/Services/PaperlessClient.php` |
-| Document gone from Paperless (never worth retrying) | `src/Services/PaperlessNotFoundException.php` |
 | **Stage registry and job runner** | `src/Services/Pipeline.php` |
-| Stage 1: fetch metadata and the source PDF | `src/Services/IngestStage.php` |
+| Stage 1: check what was ingested before spending on it | `src/Services/IngestStage.php` |
+| **Where every document enters: check, insert, store, queue** | `src/Services/Ingest/Ingestor.php` |
+| A file being offered, and how to move it | `src/Services/Ingest/IngestCandidate.php` |
+| The ingest routes that exist, and their labels | `src/Services/Ingest/IngestSource.php` |
+| A candidate that was refused | `src/Services/Ingest/IngestException.php` |
 | **Stage 2: render pages, then transcribe them** | `src/Services/OcrStage.php` |
 | **Stage 3: three extraction calls, merged** | `src/Services/ExtractStage.php` |
 | **`{{ name }}` prompt interpolation** | `src/Services/PromptRenderer.php` |
@@ -443,7 +602,7 @@ without a gate fails here rather than being found by whoever finds it.
 | Transcriptions, newest first | `src/Models/OcrResult.php` |
 | Work queue: claim, backoff, release stalled | `src/Models/PipelineJob.php` |
 | What the machine did, per stage | `src/Models/DocumentEvent.php` |
-| Webhook receiver | `src/Controllers/WebhookController.php` |
+| The upload page: the one ingest route today | `src/Controllers/UploadController.php` |
 | Document list, detail, PDF, retry, ignore | `src/Controllers/DocumentController.php` |
 | **Clear Books v1 REST client, OAuth2 and all** | `src/Services/ClearBooksClient.php` |
 | Clear Books failure, carrying whether a retry helps | `src/Services/ClearBooksException.php` |
@@ -451,14 +610,13 @@ without a gate fails here rather than being found by whoever finds it.
 | **Company-name reduction: the deterministic fallback** | `src/Services/Normaliser.php` |
 | Refill the cached reference lists | `src/Services/CacheRefresh.php` |
 | **Stage 4: check every id, fall back on names** | `src/Services/MatchStage.php` |
-| Suppliers → Paperless correspondents | `src/Services/SupplierSync.php` |
 | One row per entity that has to resolve | `src/Models/EntityMatch.php` |
-| Connect, cache state, refresh now, sync now | `src/Controllers/ClearBooksController.php` |
+| Connect, cache state, refresh now, invoice sync | `src/Controllers/ClearBooksController.php` |
 | **The queue, the editable detail, resolve, submit, skip** | `src/Controllers/ReviewController.php` |
 | Accounts: create, edit, role, deactivate, reset a password | `src/Controllers/UserController.php` |
 | Changing your own password | `src/Controllers/AccountController.php` |
 | An exception that can explain itself | `src/Services/Diagnosable.php` |
-| Files arriving from a browser, and the three checks on them | `src/Core/Upload.php` |
+| Files arriving from a browser, and the checks on them | `src/Core/Upload.php` |
 | Every route x every role, over real HTTP | `tests/permissions.php` |
 | Is every workflow step really implemented? | `tests/pipeline.php` |
 | First-time install on a server | `install.sh` |
@@ -467,15 +625,20 @@ without a gate fails here rather than being found by whoever finds it.
 | The logo: serving it, and replacing it | `src/Controllers/BrandingController.php` |
 | The shell for anything meant to end up on paper | `templates/layouts/print.php` |
 | What counts as an acceptable password, in one place | `src/Core/PasswordPolicy.php` |
-| Custom fields: define, pair with Paperless, take out of use | `src/Controllers/FieldController.php` |
+| Custom fields: define, edit, take out of use | `src/Controllers/FieldController.php` |
 | Prompts: edit, version, roll back, reset to default | `src/Controllers/PromptController.php` |
 | **Application settings, per-card saves, connection tests** | `src/Controllers/SettingsController.php` |
 | The activity log: filters and paging, and nothing that writes | `src/Controllers/ActivityController.php` |
-| Pick or create the Paperless field a value maps onto | `src/Services/PaperlessFields.php` |
 | **The only class that creates anything in Clear Books** | `src/Services/EntityCreator.php` |
 | **Build the payload, submit, attach, record** | `src/Services/SubmitStage.php` |
-| Make Paperless agree with what was submitted | `src/Services/PaperlessWriteBack.php` |
 | What was sent to Clear Books, and what came back | `src/Models/Submission.php` |
+| The local copy of what Clear Books already holds | `src/Models/ClearbooksInvoice.php` |
+| Fetching that copy, on a schedule and on a button | `src/Services/InvoiceSync.php` |
+| **Stage 5: find the record a Clearbooks Number names, attach the PDF** | `src/Services/LinkStage.php` |
+| **Which record a number means, and whether the page agrees** | `src/Services/InvoiceMatcher.php` |
+| The Existing Invoice queue: link, push to New, delete | `src/Controllers/ExistingInvoiceController.php` |
+| **Which field is each note, unresolved match and low confidence about?** | `src/Services/FieldIssues.php` |
+| The scan viewer: page images first, PDF on request | `templates/partials/scan.php` |
 
 **Still to be written**: the administration controllers and screens — settings,
 prompts, custom fields, users, activity log. Every one of them makes its HTTP
@@ -499,37 +662,68 @@ have bought nothing.
   flashes. The choice is kept in `localStorage` *and* a `theme` cookie.
 - `app.js` handles: theme toggle, nav drawer (measuring `--header-h`), nav
   groups, show/hide password, dismissable and auto-hiding flash messages,
-  `data-confirm`, and `data-clearbooks-window` (the reusable named
-  `clearbooksWindow` for the "Open in Clear Books" action).
+  `data-confirm`, `data-clearbooks-window` (the reusable named
+  `clearbooksWindow` for the "Open in Clear Books" action), the upload page's
+  client-side file checks, and the scan viewer (`data-scan`) — see §35.
 - Layouts: `templates/layouts/app.php` (signed in) and `auth.php` (signed out).
 - Partials: `brand.php` (logo with light/dark variants, IG monogram fallback),
-  `nav.php`, `footer.php`, `flash.php`.
+  `nav.php`, `footer.php`, `flash.php`, `scan.php`, `extraction.php`,
+  `matches.php`.
 - Layouts are three now: `app.php` (signed in), `auth.php` (signed out) and
   `print.php`, which includes neither the navigation nor the footer — see §28.
+- **`app.php` takes a `wide` view variable** and puts `.container-wide` on
+  `<main>`, which raises the content column from 1200px to 1760px. It is opt-in
+  per screen and set by the document-facing ones: the dashboard, the document
+  list and record, and all three queues and their detail screens. Forms keep
+  their own `max-width`, so an administration screen set wide would not stretch
+  anyway — the opt-in is so a reader can see which screens were designed for a
+  monitor. See §35.
 - Component classes available: `.card`, `.stat-grid`/`.stat-card`,
   `.table-wrap`/`.table`/`.table-compact`/`.amount`, `.badge-*`, `.btn-*`,
   `.field`/`.input`/`.field-error`/`.field-hint`, `.flash-*`, `.subnav`,
-  `.filter-bar`, `.page-head`, `.section-title`, `.empty`.
+  `.filter-bar`, `.page-head`, `.section-title`, `.empty`, `.container-wide`,
+  `.wide-split`, the column-width helpers (`.col-tight`, `.col-narrow`,
+  `.col-date`, `.col-name`, `.col-wide`, `.col-grow`), the scan viewer
+  (`.scan`, `.scan-stage`, `.scan-page`, `.scan-bar`, `.scan-strip`,
+  `.scan-pdf`) and the field marks (`.is-flagged`, `.is-flagged-danger`,
+  `.flag-tag`, `.flag-notes`, `.issue-index`, `.issue-jump`).
 
 ---
 
 ## 9. Navigation structure
 
 ```
-[IG logo] InvoGrid   Documents  Review queue  Settings ▾   [theme] [avatar →] [Sign out]
-                                                                   └ links to
-                                                                     /account/password
-                                                          ├ Application settings
-                                                          ├ Branding
-                                                          ├ Clear Books
-                                                          ├ Prompts
-                                                          ├ Custom fields
-                                                          ├ Users
-                                                          └ Activity log
+[IG logo] InvoGrid  Documents  Review queue  Existing invoices  Duplicates  Upload  Settings ▾  [theme] [avatar →] [Sign out]
+                                                                                                └ links to
+                                                                                                  /account/password
+                                                                                       ├ Application settings
+                                                                                       ├ Branding
+                                                                                       ├ Clear Books
+                                                                                       ├ Prompts
+                                                                                       ├ Custom fields
+                                                                                       ├ Users
+                                                                                       └ Activity log
 ```
 
 No Dashboard entry: the logo is the link home. Items are filtered by capability;
 a group with nothing visible in it disappears entirely.
+
+**There are three queues and each is a top-level entry**, because each asks a
+different question of different data:
+
+| Queue | The question |
+|---|---|
+| Review queue | Is this extraction right, and does everything on it resolve? |
+| Existing invoices | Which Clear Books record does this handwritten number point at? |
+| Duplicates | Is this invoice one Clear Books already holds, though nobody wrote a number on it? |
+
+A tab on another screen would be a queue nobody works, and the third is the one
+where the wrong answer costs money rather than time.
+
+**The desktop breakpoint moved from 900px to 1150px with the third queue** —
+back to Kitwell's own, and §2's note about it is updated. Six top-level items
+plus the account block and the brand run to about 1100px of content, which at
+900 is a header wrapped onto two rows.
 
 Footer, every page: `InvoGrid — by Junction Inc Ltd` (vendor linked), plus the
 tagline and who is signed in.
@@ -541,9 +735,9 @@ tagline and who is signed in.
 - **`.env`** — what is needed before the database can be read: `APP_URL`,
   `APP_KEY`, DB credentials, session/HTTPS behaviour, `STORAGE_PATH`. Also holds
   an optional fallback for each integration credential.
-- **`settings` table** — everything an administrator edits: Paperless address and
-  token, Clear Books OAuth2 credentials and business id, LLM API keys, webhook
-  secret, per-stage provider and model choices, logo paths.
+- **`settings` table** — everything an administrator edits: Clear Books OAuth2
+  credentials and business id, LLM API keys, the upload size limit, per-stage
+  provider and model choices, logo paths.
 - **Precedence: a non-empty setting wins; `.env` is the fallback.** Implemented
   in `Setting::ENV_FALLBACK`.
 - Secrets (`is_secret = 1`) are encrypted with `APP_KEY`. `Setting::secret()` is
@@ -551,8 +745,8 @@ tagline and who is signed in.
   secret in the clear** when `APP_KEY` is missing. Nothing prints a secret back
   to a browser; `Setting::summary()` exposes only `configured: true|false`.
 
-Seeded setting keys: `organisation_name`, `paperless_base_url`,
-`paperless_token`*, `paperless_webhook_secret`*, `clearbooks_base_url`,
+Seeded setting keys: `organisation_name`, `ingest_max_upload_mb`,
+`clearbooks_base_url`,
 `clearbooks_client_id`, `clearbooks_client_secret`*, `clearbooks_access_token`*,
 `clearbooks_refresh_token`*, `clearbooks_token_expires_at`,
 `clearbooks_business_id`, `clearbooks_web_url`, `clearbooks_cache_ttl_minutes`,
@@ -560,8 +754,7 @@ Seeded setting keys: `organisation_name`, `paperless_base_url`,
 `llm_extraction_provider`, `llm_extraction_model`, `flash_auto_hide_seconds`,
 `logo_light_path`, `logo_light_mime`, `logo_dark_path`, `logo_dark_mime`,
 `clearbooks_authorise_url`, `clearbooks_redirect_uri`, `clearbooks_scopes`,
-`clearbooks_sync_correspondents`, `clearbooks_delete_correspondents`,
-`paperless_processed_tag_id`, `paperless_replace_content`,
+`clearbooks_invoice_sync_interval_minutes`, `clearbooks_invoice_sync_last_run`,
 `clearbooks_attach_pdf`.
 (`*` = secret.)
 
@@ -587,8 +780,17 @@ asserts each stays absent:
   `clearbooks_token_expires_at` — written by the consent flow. There is nothing
   useful a person could type, and a value typed by hand breaks a working
   connection.
-- `clearbooks_sync_correspondents`, `clearbooks_delete_correspondents` — already
-  switches on the Clear Books screen, beside the sync they govern.
+- `clearbooks_invoice_sync_interval_minutes`,
+  `clearbooks_invoice_sync_last_run` — already on the Clear Books screen, beside
+  the sync they govern.
+
+**The Existing Invoice route (§33) adds nothing here, and that is deliberate.**
+An earlier draft of it carried three tolerances — how far a date might differ,
+and how far a total might. The checksum is exact instead, so there is nothing to
+configure: a tolerance setting is a licence to attach a scan to the wrong
+invoice without anybody noticing, and if one is ever wanted it should be an
+argued change rather than a row that appeared. `tests/smoke.php` asserts that no
+settings key containing "tolerance" exists.
 
 The form is filled from `Setting::stored()`, **not** `Setting::get()`. `get()`
 answers "what does the application use", which for an empty row is the `.env`
@@ -603,14 +805,17 @@ alone", and a separate checkbox clears one. `templates/admin/settings.php` may
 not reference `Setting::` at all, asserted with the comments stripped first so
 that deleting the paragraph explaining the rule cannot satisfy the check.
 
-`document_types.paperless_document_type_id` is edited on this screen, in its own
-card, against the list fetched live from Paperless. It stays a column rather than
-a settings row so that adding a document type is still one insert. When Paperless
-cannot be reached the card falls back to numeric inputs and says why — that is
-frequently exactly when somebody is correcting an id.
+The **document types** card on this screen is read-only. It used to carry the one
+editable thing about a type — which Paperless document type it was written back
+as — and that has gone. What it shows is still worth the space: which Clear Books
+resource each type is submitted to is a row in `document_types` rather than
+anything in the code, and it is the only screen that answers "what does InvoGrid
+do with a credit note". Changing one stays a migration, because
+`clearbooks_resource` decides which endpoint somebody's accounts are written to
+and a text box is the wrong amount of ceremony for that.
 
 **Connection tests** (`POST /admin/settings/test/{target}`) call the `ping()`
-that `PaperlessClient` and both LLM clients already carried for this screen.
+that both LLM clients already carried for this screen.
 `isConfigured()` only answers "is there a string in the box", which is not the
 question anybody has. The model tests are real API calls, which is why they are
 buttons rather than something done on page load, and why they are POST — a GET
@@ -667,52 +872,68 @@ the column names against `001_schema.sql` first.
 
 ---
 
-## 12. Paperless: the facts, and where they came from
+## 12. The pivot away from Paperless
 
-All of this was read out of the paperless-ngx source, not inferred. Where a
-later prompt needs to touch the integration, start here.
+Prompts 1–13 built InvoGrid around Paperless-ngx: a workflow posted a webhook,
+InvoGrid pulled the document and its PDF from the API, and once the bill reached
+Clear Books it wrote correspondent, title, content, document type, tags, custom
+fields and a note back. Prompt 15 removed all of it. This section records what
+went, what replaced it, and the decisions that are not obvious from the diff.
 
-**The webhook action** (`src/documents/workflows/actions.py`,
-`workflows/webhooks.py`, `templating/workflows.py`):
+### What was removed
 
-- Placeholders available in a workflow action are `{{doc_id}}`, `{{doc_title}}`,
-  `{{doc_url}}`, `{{correspondent}}`, `{{document_type}}`, `{{owner_username}}`,
-  `{{added*}}`, `{{created*}}`, `{{original_filename}}`, `{{filename}}`.
-- **`{{doc_id}}` renders to an empty string on a Consumption-Started trigger.**
-  The context builder sets `"id": ""` in its overrides branch, because there is
-  no Document row yet. The workflow must therefore use **Document Added** (or
-  Document Updated). This is the single most important fact in this section.
-- `use_params` on → each param *value* is rendered and the set is posted as a
-  dict. `use_params` off with a `body` → the body string is rendered and posted
-  as raw content with no content type. `as_json` decides `json=` versus `data=`
-  / `content=`.
-- **Timeout is 5.0 seconds**, redirects are **not** followed, and a non-2xx is
-  **retried up to 3 times** with backoff. This is why the receiver does almost
-  nothing and why idempotency is mandatory rather than tidy.
-- A `Host` header set on the action is stripped before sending.
-- `PAPERLESS_WEBHOOKS_ALLOW_INTERNAL_REQUESTS` (default `true`),
-  `_ALLOWED_SCHEMES` (`http,https`) and `_ALLOWED_PORTS` (all) can block a URL
-  before it leaves Paperless. A blocked delivery is logged on the Paperless
-  side and never reaches `storage/logs/webhook.log`.
+| Gone | Was |
+|---|---|
+| `WebhookController` | the receiver, authenticated by a shared secret |
+| `PaperlessClient` | the REST client |
+| `PaperlessNotFoundException` | "deleted there, never retry" |
+| `PaperlessWriteBack` | the six writes after a submission |
+| `PaperlessFields` | the custom-field pairing and creation |
+| `SupplierSync` | Clear Books suppliers → Paperless correspondents |
+| `POST /webhook/paperless` | the only unauthenticated input route |
+| `POST /admin/clearbooks/sync` | the correspondent sync, and its dry run |
+| `POST /admin/settings/document-types` | the document-type mapping form |
+| `manage.sh webhook-secret`, `--sync` on the refresh script | |
 
-**The REST API** (`src/documents/views.py`):
+**No code anywhere calls a Paperless endpoint.** `Http::download()` survives
+because it is a capability of the HTTP client rather than part of that
+integration — nothing calls it today, and the next ingest route that pulls from
+a URL will need it, size guard included.
 
-- `GET /api/documents/{id}/download/?original=true` — the comparison is against
-  the **literal string `true`**. `original=1` silently returns the *archive*
-  copy, which is the re-rendered OCR version rather than the scan.
-- `POST /api/documents/{id}/notes/` with `{"note": "..."}`. Paperless calls
-  them notes; nothing in the API says comment.
-- `PATCH /api/documents/{id}/` accepts correspondent, document_type,
-  storage_path, title, content, tags, custom_fields, created, owner. An unknown
-  key is ignored silently, so `PaperlessClient::updateDocument()` rejects one
-  rather than let a write appear to work and change nothing.
-- `custom_fields` is `[{"field": <id>, "value": <value>}, ...]` and a PATCH
-  **replaces the whole list** — hence `setCustomFields()` merging by default.
-- Auth is `Authorization: Token <token>`, not Bearer.
+### What replaced it
 
-**Confirming a real payload:** every delivery, accepted or rejected, is appended
-to `storage/logs/webhook.log` with the content type and body, secret redacted.
-That file is how a placeholder question gets settled in seconds.
+`src/Services/Ingest/` — see §21. A document is handed to InvoGrid directly, and
+the pipeline from OCR onward is unchanged: same stages, same statuses, same
+queue, same retry semantics.
+
+### Decisions
+
+- **Columns were dropped, not left unused.** Listed in §3. A nullable column
+  nobody populates again is read by the next maintainer as something that still
+  works.
+- **Columns holding real data were renamed instead.** "Correspondent" was
+  Paperless's word for the party a document is with; what
+  `documents.correspondent_raw` held — the issuer as printed on the page — is as
+  useful as it ever was. Same for `extractions.paperless_title`, which is the
+  short "what was bought" line that heads the review screen.
+- **Two extraction prompts were re-seeded at a new version**, not edited in
+  place: `extract_header` (`paperlessTitle` → `documentTitle`) and
+  `extract_supplier` (dropping the `paperlessId` it echoed back for the
+  correspondent write-back). Every other prompt change in this application works
+  the same way — the old version stays readable beside it, and a site that had
+  customised the previous one still has that text to copy from. `extract_lines`
+  never mentioned Paperless and is untouched.
+- **The `submission` custom-field source was repurposed, not retired.**
+  `clearbooks_bill_id` and `clearbooks_document_number` existed only to be
+  written into Paperless. They are now written onto the extraction itself, so
+  they reach the document page and the printed summary. See §23.
+- **The correspondent sync went entirely, but the Clear Books side stayed.**
+  Supplier listing, matching and creation are untouched — only the half that
+  mirrored them into Paperless is gone. `EntityCreator::supplier()` no longer
+  returns a `correspondentId`.
+- **`manage.sh reset-storage` became genuinely destructive.** It used to say the
+  PDFs were re-fetchable from Paperless. Nothing holds a second copy now, and the
+  command says so in bold.
 
 ---
 
@@ -776,13 +997,14 @@ to the header prompt is therefore an edit, not a code change.
 
 | Variable | Is |
 |---|---|
-| `ocrText` | `OcrResult::text()`, `### Notes` included |
+| `ocrText` | `OcrResult::text()` — the transcription, and nothing but |
 | `today` | `date('Y-m-d')` |
-| `suppliers` | `ClearbooksCache::forPrompt('supplier')` — carries **both** `cbId` and `paperlessId` |
+| `suppliers` | `ClearbooksCache::forPrompt('supplier')` — carries `cbId` |
 | `accountCodes` | `ClearbooksCache::forPrompt('account_code')` |
 | `vatRates` | `ClearbooksCache::forPrompt('vat_rate')` — with the percentage, or VAT cannot be computed |
 | `vatTreatments` | `ClearbooksCache::forPrompt('vat_treatment')` |
 | `customFields` | `CustomField::forPrompt()` |
+| `annotations` | `OcrResult::annotations()` — the handwritten marks as objects, ink colour and location intact |
 
 **When adding a variable**, add it to `ExtractStage::variables()` *and* to
 `PromptTemplate::EXTRACTION_VARIABLES`, which is the contract the Prompts editor
@@ -813,6 +1035,13 @@ and then invents values to fill the gap.
   and digits and comparing (`ExtractStage::sameKey()`), so a new document type
   is still just a row rather than an entry in a translation table. The same
   trick maps `clearbooks_number` to the OCR's `clearbooksNumber`.
+- **Custom fields are resolved in two steps, not three.** The OCR response
+  already answers whatever lines up with a field by name; only the rest goes to
+  the fallback call, and that call is now given `{{ annotations }}` so it can
+  still see the handwriting. The middle step — reading the values back out of
+  the `### Notes` text by label — went with the section in Prompt 16, and was
+  never anything but a worse copy of step one: the only fields the notes could
+  state were the two the OCR prompt reports anyway.
 
 ---
 
@@ -826,22 +1055,34 @@ stage.
 
 ### Structured output is data, not text
 
-**The `### Notes` section is a rendering, not a carrier.** It exists because
-n8n had no database: every field the model found had to be flattened into text
-appended to the transcription, and confidence scores and extra fields became
-impractical almost immediately. InvoGrid has a database, so:
+**The `### Notes` section is gone** — removed in Prompt 16, and it should not
+come back. It existed because n8n had no database: every field the model found
+had to be flattened into text appended to the transcription, and confidence
+scores and extra fields became impractical almost immediately. InvoGrid has a
+database, so:
 
 - the response is parsed **once**, in `OcrResult::create()`, and stored as
   columns — `raw_text` (verbatim, for a human asking what actually came back),
   `ocr_text` (the transcription alone, which is what a downstream prompt is
-  given), `structured_json` (everything else), `notes_present` (promoted
-  because it is the one field worth filtering a list by);
+  given), `structured_json` (everything else), and four promotions out of it:
+  `notes_present`, `clearbooks_number`, `project_code`, `annotations_json`;
 - **nothing downstream re-parses the raw text.** The document template used to
   `json_decode` it on every render; that was the n8n habit and it is gone.
-  `OcrResult::structured()` and `OcrResult::text()` are the readers;
-- `### Notes` keeps its place inside `ocr_text` for two reasons only: it is
-  what gets written into the Paperless document content, and it is what a human
-  reads when checking the scan against the record between OCR and submission.
+  `OcrResult::structured()`, `text()`, `annotations()`, `clearbooksNumber()`
+  and `projectCode()` are the readers;
+- `ocrText` is the transcription and nothing else. It was carrying an appended
+  restatement of the structured fields, which every extraction prompt then had
+  to be told to skip past — and which put text into the permanent record of a
+  page that is not printed on that page. A prompt that wants the annotations
+  gets `{{ annotations }}`; the one screen that wants them for a human renders
+  them from the column.
+
+**A field is promoted to a column when something has to act on it, not when
+something has to show it.** `structured_json` is enough to render from;
+`clearbooks_number` is a column because the branch tests it on every document
+and a decision that must decode a blob to reach its input is one nothing can
+index or query. `notes_present` was promoted on the same grounds — it is the
+one field worth filtering a list by.
 
 **Applies to every stage from here on.** Confidence scores, per-field notes and
 anything else a prompt reports are stored as data and rendered into text where
@@ -864,14 +1105,30 @@ named in the active prompt.
 There are **no confidence fields and no `reviewNotes` in the OCR prompt**. Those
 appear in the three extraction prompts instead. Do not reintroduce them here.
 
+**The prompt's Step 4 exists to stop the notes section coming back.** A model
+given Steps 2 and 3 and told nothing about what to do with them will helpfully
+summarise them at the end of the transcription anyway, which is the section
+under another name. Step 4 says plainly that `ocrText` is the transcription and
+nothing else, and `tests/smoke.php` asserts the string `### Notes` appears
+nowhere in the active prompt.
+
+**`clearbooksNumber` is now load-bearing.** It is what routes a document to the
+Existing Invoice flow (§32), so an edit to that rule changes where documents
+end up — not just what a screen displays.
+
 ### The other three, as seeded
 
 All three are now rows in `prompt_templates` (migration 008), verbatim apart
 from the interpolation — see §14. Things about them worth keeping in mind:
 
-- **The extraction prompts ignore everything from `### Notes` onward** in the
-  OCR text. That is why the notes section is appended *inside* `ocrText`: it
-  travels with the record for a human and is skipped by the machine.
+- **None of them mentions `### Notes` any more.** `extract_header` was told to
+  ignore everything from that heading onward and `extract_custom_fields` was
+  told to read it first; both were re-seeded in migration 018. An instruction to
+  skip past a landmark that is no longer there is worse than no instruction —
+  a model that goes looking for it will find some other heading and do as it was
+  told. `extract_custom_fields` is given `{{ annotations }}` instead, which is a
+  straight improvement on the section it replaces: the marks arrive as objects
+  with ink colour and location intact rather than as flattened bullets.
 - `accountCode` is **numeric**; `vatRateKey` is a string; `vatTreatment` is
   `{key, name}`. `documentType` is `bill` or `creditNote` — mapped onto
   `document_types.type_key` by reduction, not a lookup table.
@@ -879,7 +1136,7 @@ from the interpolation — see §14. Things about them worth keeping in mind:
   address, VAT number and company number the supplier call returns when it
   finds no match. The matching stage turns that into `entity_matches` rows;
   until then it is a record of what the model said, not a decision.
-- The supplier prompt returns `cbId` **and** `paperlessId`, which is why
+- The supplier prompt returns `cbId` alone since Prompt 15, which is why
   `ClearbooksCache::forPrompt()` puts both into the injected list.
 
 ---
@@ -1068,8 +1325,8 @@ integration, start here.
 
 - **Nothing is deleted, only deactivated** (`active = 0`). A document already
   matched against a supplier keeps a resolvable record, and
-  `paperless_correspondent_id` survives — which is the only link back to the
-  correspondent the sync then has to deal with.
+  the local knowledge held against the row survives — its usual credit route,
+  and every document already matched to it.
 - **An archived supplier takes the same path as a deleted one.** Archiving is
   how a supplier is retired in practice; nothing downstream has to know which
   happened.
@@ -1146,48 +1403,119 @@ can; both are legal from `matching`, and `tests/smoke.php` asserts it.
 
 ---
 
-## 21. Supplier ↔ Paperless correspondent sync
+## 21. Ingest: the routes, and the boundary they sit on
 
-`App\Services\SupplierSync`. **Clear Books is the source of truth**; nothing
-flows the other way. A correspondent invented in Paperless is left alone.
+A document enters InvoGrid through an **ingest route**. One exists — the upload
+page — and the abstraction exists because a second one (a watched directory for
+files dropped by other systems) is expected, and adding it should not touch the
+pipeline.
 
-| Case | What happens |
-|---|---|
-| Active supplier, no link | An existing correspondent with the same **normalised** name is linked; otherwise one is created. Names are unique in Paperless and a duplicate splits a supplier's filing. |
-| Linked, name differs | The correspondent is renamed. A name collision is logged and left for a person — merging two correspondents is not this job's decision. |
-| Linked to a correspondent that no longer exists | The dead link is cleared and the supplier re-links on the same run. |
-| Deactivated supplier with a link | Count, re-point, count again, then delete. Never otherwise. |
+```
+src/Services/Ingest/
+  IngestCandidate.php   a file being offered, and how to move it
+  IngestSource.php      the routes that exist, and what to call them on screen
+  Ingestor.php          the one entry point: check, insert, store, queue
+  IngestException.php   a candidate that was refused
+```
 
-**The safety property is the order.** A correspondent with documents pointing at
-it is never deleted. Each document is first sent to whichever supplier Clear
-Books now considers correct:
+### The contract
 
-1. the supplier the matching stage settled on for that document
-   (`documents.correspondent_matched_supplier_id`), if it is still active and
-   has a correspondent; failing that,
-2. an unambiguous `matchByName()` of the retired supplier's name against the
-   current list — which is how a delete-and-recreate rename resolves.
+A route's whole job: produce an `IngestCandidate` and hand it to
+`Ingestor::accept()`. That method does everything else and is the only place any
+of it happens — checking, the `documents` row, the file on disk, the queued
+first stage. **Nothing past this class knows routes exist.**
 
-Anything else is **flagged**: a note on the Paperless document plus an
-`audit_log` entry, and the correspondent stays indefinitely. An unfiled document
-is a real loss to a person; a stale correspondent is untidiness.
+`accept()` returns the created `documents` row, or throws `IngestException` with
+a sentence written to be shown to whoever offered the file.
 
-- The note is marked `[InvoGrid]` and written **at most once** — the existing
-  notes are checked first, or a nightly cron pastes the same sentence on for as
-  long as the situation lasts. The `audit_log` entry is written on the same
-  condition, for the same reason.
-- The per-run summary entries (`clearbooks.cache_refresh`,
-  `clearbooks.correspondent_sync`) are only written when something actually
-  moved. `flagged` and `skipped` are standing states, not changes.
-- `clearbooks_sync_correspondents` turns the whole thing off;
-  `clearbooks_delete_correspondents` turns off deletion alone. Both default on,
-  and **the never-delete-with-documents guard holds whatever they say.**
+### Order of operations, and why
 
-Audit actions this writes: `clearbooks.cache_refresh`,
-`clearbooks.correspondent_sync`, `clearbooks.connect_started`,
-`clearbooks.connected`, `clearbooks.disconnected`,
-`paperless.correspondent_created`, `_linked`, `_renamed`, `_deleted`, `_kept`,
-`_failed`, `paperless.document_repointed`, `paperless.document_flagged`.
+**Check, insert, store, queue** — and if storing fails, the row is deleted
+again. The alternatives are both worse:
+
+- storing first means naming the file before there is an id to name it after;
+- leaving the row behind on a failed write means a document at `received` with
+  no PDF, which the ingest stage picks up, fails, retries four times and finally
+  parks in front of a person who can do nothing about it.
+
+A candidate that could not be stored was never accepted, and the database should
+say so.
+
+### Why `IngestCandidate` is a class
+
+`moveTo()`. A browser upload must be moved with `move_uploaded_file()`, which
+refuses any path PHP did not itself receive as an upload — that refusal is the
+only thing standing between an upload handler and being asked to move
+`/etc/passwd` into the storage directory. A file found in a watched directory is
+the opposite case: `move_uploaded_file()` would refuse *it*, and `rename()` fails
+across volumes, so it falls back to a copy.
+
+Each route knows which it is (`fromUpload()` / `fromFile()`); nothing downstream
+does.
+
+### Checked twice, and they are not the same check
+
+| Where | What | On failure |
+|---|---|---|
+| `Ingestor::check()` | readable, not empty or truncated, within the limit, begins `%PDF-` | refused; nothing is written |
+| `IngestStage::run()` | the *stored* file still exists, is still a PDF, `pdfinfo` finds pages | retryable stage failure |
+
+The second is the gate in front of the expensive part — OCR renders every page
+and sends each to a vision model — and it exists because a watched directory can
+hand over a file another process is still writing. `Ingestor` reads a plausible
+size and a `%PDF-` header from a file that is nonetheless half a document; the
+stage runs a moment later from the queue and catches it.
+
+That failure is deliberately **not** in `Pipeline::isPermanent()`. It looks
+permanent and usually is not: the next attempt a minute later finds a whole
+document.
+
+### Keeping `received → ocr_pending` as a queued stage
+
+The route could create the document at `ocr_pending` and skip the stage. It does
+not, for three reasons: the queue processor stays the only thing that advances a
+document however it arrived; the retry action has a stage to retry; and the
+verification above has somewhere to live that is not inside every route.
+
+### The size limit
+
+`Ingestor::maxBytes()` reads `ingest_max_upload_mb` (default 25). A setting
+rather than a constant because the answer is local policy, and because the
+alternative is an administrator editing PHP to accept a large invoice.
+
+`Ingestor::effectiveMaxBytes()` is the smaller of that and PHP's
+`upload_max_filesize` / `post_max_size`, which cannot be raised from here. The
+upload screen quotes the effective number: a form promising 25MB while PHP drops
+anything over 2MB produces the worst kind of bug report — *"it just goes back to
+the list"*. `UploadController` also tells an empty `$_FILES` apart from a body
+PHP discarded whole for exceeding `post_max_size`, which is otherwise
+indistinguishable to the person who just waited two minutes.
+
+### What is recorded about arrival
+
+`ingest_source`, `original_filename`, `ingested_by`, `ingested_at`. Nothing
+downstream reads any of them — they answer *"where did this come from?"*, which
+is the first question asked about a document that looks wrong. The document page
+prints them under the heading; `/documents` searches the filename.
+
+`ingest_source` is a `VARCHAR`, not an enum, so a route added later is not a
+schema change — and `IngestSource::label()` falls back to the stored key so a row
+written by a route since removed still renders. Rows that predate native ingest
+are stamped `legacy` by the migration rather than `upload`, because attributing
+them to a person who did not upload them would be a lie the document page would
+then repeat.
+
+### Adding a route
+
+A constant and a label in `IngestSource`, then:
+
+```php
+Ingestor::accept(IngestCandidate::fromFile($path, basename($path), IngestSource::WATCHED_FOLDER));
+```
+
+The checks, the storage layout, the row and the queued first stage come with it.
+
+---
 
 ## 22. The review screen — the rules
 
@@ -1198,11 +1526,11 @@ before it is machinery; this is what a person uses the application for.
   wrong but can only accept or reject the document is worse off than one with no
   machine at all, because now they have to go somewhere else to fix it. The
   model's reading is a first draft.
-- **The PDF is an `<object>` pointing at `/documents/{id}/pdf`.** Same origin,
-  ordinary authenticated route, browser's own viewer. The arrangement this
-  replaces had the file on another domain and shipped it base64-encoded inside
-  JSON to get round that; nothing here needs to, because InvoGrid stores the
-  file.
+- **The scan pane shows the rendered page images; the PDF is a button.**
+  Prompt 19 turned this round — see §35 for the whole of it. The `<object>`
+  pointing at `/documents/{id}/pdf` is still there and still the same-origin
+  authenticated route, but it now opens *underneath* the images when somebody
+  asks for it rather than being the thing embedded.
 - **Nothing is created in Clear Books without a person confirming a form.**
   `App\Services\EntityCreator` is the only class that creates anything, every
   entry point is a POST from the review screen, and there is no scheduled or
@@ -1255,7 +1583,7 @@ re-derived, because catching exactly that is what re-running the stage is for.
 `Extraction::totalsFromLines()` is the single implementation. It was written
 three times — the extraction stage, the review form, and not at all on the path
 where a reviewer picks a VAT rate — and the gap in the third was a real bug
-found by submitting a document: the note written into Paperless said
+found by submitting a document: the submitted bill said
 `£250.00 net` where it should have said `£300.00`, because the totals were the
 ones from before the rate was known. `Extraction::refreshTotals()` is called
 after any line change outside the form.
@@ -1267,7 +1595,7 @@ better authority on a rounding settlement or a discount applied to the total.
 
 ## 23. Submission and write-back
 
-`App\Services\SubmitStage` and `App\Services\PaperlessWriteBack`. The only
+`App\Services\SubmitStage`. The only
 irreversible thing InvoGrid does.
 
 ### The order, and why it is the order
@@ -1278,7 +1606,7 @@ irreversible thing InvoGrid does.
 3. create the record in Clear Books
 4. write `submissions`, move to `submitted`   <- the critical pair
 5. attach the PDF
-6. write back to Paperless
+6. record what Clear Books called it
 ```
 
 Four comes before five and six deliberately. A crash between three and four
@@ -1332,36 +1660,38 @@ valid, but the money has already moved — a due date on one shows in Clear Book
 as an outstanding payable nobody owes. The test is the sign rather than the type
 key, so a new type gets the right answer without that line being edited.
 
-### What goes back to Paperless
+### What the submission records
 
-Six writes, each attempted independently so one failure does not cost the
-others. Nothing is guessed: every target id is nullable and an unset one means
-the write is skipped and said so.
+`SubmitStage::recordProducedFields()`. The two `submission`-source custom fields
+— `clearbooks_bill_id` and `clearbooks_document_number` — are filled in from the
+Clear Books response and written onto the extraction's `custom_field_values`.
 
-| What | From |
-|---|---|
-| `correspondent` | `clearbooks_cache.paperless_correspondent_id` for the matched supplier |
-| `title` | `extractions.paperless_title` |
-| `content` | InvoGrid's own transcription, **replacing Paperless's OCR** |
-| `document_type` | `document_types.paperless_document_type_id` |
-| `tags` | the existing tags plus `paperless_processed_tag_id` |
-| `custom_fields` | each field's own `paperless_field_id`, merged not replaced |
-| a note | Clear Books id, document number, supplier, total, their reference |
+Until Prompt 15 they had nowhere to live but Paperless, and the write-back put
+them there. Now they are stored where every other field value already is, which
+is how they reach the document page and the printed summary without anybody
+opening another system. The `submissions` row still holds `clearbooks_id`,
+`clearbooks_url` and the whole response — this is a convenience laid over that,
+not a second copy of the record.
 
-Replacing `content` is switchable (`paperless_replace_content`, on) because
-overwriting somebody's search index is a decision an operator may make
-differently. On a scanned invoice the LLM reading is better than Paperless's
-engine and is the only version carrying the handwritten annotations — which is
-exactly what somebody searching the archive is looking for.
+Two details that are easy to get wrong:
 
-`custom_fields` is **merged**: a PATCH replaces the whole list, so writing the
-Clear Books id naively would wipe every field somebody had set by hand.
+- **Written straight to the column**, not through `Extraction::updateFields()`,
+  which stamps `edited_at`. That stamp means *a person changed this* and the
+  review screen says so; a value the submission produced by itself must not make
+  an untouched extraction claim it was edited by hand.
+- **A key this stage does not produce is skipped, not nulled.** Somebody can add
+  a `submission` field on the custom-fields screen that nothing knows how to
+  fill in. Leaving it empty is honest; overwriting whatever is there with null
+  would lose a value a reviewer had typed.
+
+Best effort, like everything else past step four: a failure here is logged to
+`audit_log` and must not make a submitted document look unsubmitted.
 
 ### Custom fields have two origins
 
 `custom_fields.source` is `extracted` or `submission`, and the distinction is
 not cosmetic. `CustomField::extracted()` feeds the extraction prompt;
-`forSubmission()` is filled in by the write-back. Asking a vision model to find
+`forSubmission()` is filled in once Clear Books has answered. Asking a vision model to find
 a Clear Books bill id on a supplier's invoice asks it to invent a number that
 does not exist until InvoGrid creates the record — and it will oblige.
 `tests/smoke.php` asserts the prompt is never offered one.
@@ -1461,7 +1791,7 @@ review screen (*remember this as the usual route*), where a reviewer works the
 pattern out while reviewing; and on **Settings → Clear Books**, where somebody
 who already knows can write it down without waiting for a document. Local
 knowledge, so it survives a cache refresh for the same reason
-`paperless_correspondent_id` does — `upsert()` writes only the columns it gets
+`default_credit_route` does — `upsert()` writes only the columns it gets
 from the API, and `tests/smoke.php` asserts it.
 
 ### Why the model's reasoning is stored
@@ -1520,31 +1850,24 @@ Two rules the screen exists to enforce:
   object keyed by it, so a rename orphans every value already read off a
   document. `CustomField::update()` refuses, and the form shows the key as
   read-only text once the field exists.
+
+  Because the form shows it as read-only *text*, a browser posts nothing for it.
+  `FieldController::save()` therefore reads `field_key` **only when creating**.
+  It used to read it always, defaulting to `''` — which made the guard above
+  fire on every edit, since an empty key does not equal the stored one. Editing
+  any existing field was impossible, and it failed with a confident sentence
+  about why the key could not change, which is the sort of error nobody
+  questions. Found and fixed in Prompt 15; `tests/smoke.php` now posts the shape
+  the form actually sends and asserts it is accepted.
 - **A field is deactivated, never deleted.** Last month's extraction still has
-  to resolve what it stored. Deactivating stops it being offered to the prompt
-  and stops it being written back; nothing else changes.
+  to resolve what it stored. Deactivating stops it being offered to the prompt;
+  nothing else changes.
 
 The `source` split from Prompt 7 is shown as two sections: fields read off the
 page, and the two the submission produces. The second group is never offered to
 the extraction prompt, and the screen says why.
 
-**Pairing with Paperless** happens on the same screen, via
-`App\Services\PaperlessFields`. An existing Paperless field can be picked — its
-type and, for a select, its choices are imported — or one can be created from
-what is already typed in, so setting a field up does not mean opening the
-Paperless admin in another tab. The creation is done **first**: a failure there
-leaves nothing behind, where the other order would give an InvoGrid field that
-silently never writes back.
-
-A Paperless field already paired with another InvoGrid field is offered but
-disabled. The write-back merges by Paperless field id, so two fields pointing at
-one would overwrite each other on every document.
-
-`longtext` is InvoGrid's own type and becomes a Paperless `string` when one is
-created. That substitution lives in `PaperlessFields`, because it is a fact
-about Paperless rather than about the field.
-
-Select choices are stored as `[{id, label}]` — Paperless's own shape — so a
+Select choices are stored as `[{id, label}]` — an id distinct from the label — so a
 value written back needs no translation. The form takes one label per line.
 
 ### Prompts
@@ -1590,7 +1913,7 @@ exists to prevent.
 ### Audit actions this writes
 
 `fields.created`, `fields.updated`, `fields.activated`, `fields.deactivated`,
-`paperless.custom_field_created`, `prompts.edited`, `prompts.activated`,
+`prompts.edited`, `prompts.activated`,
 `prompts.reset`.
 
 ## 26. Accounts, and what an admin-set password implies
@@ -1703,10 +2026,10 @@ The two feeds are capability-gated: `audit.view` (admin) for who did what,
 
 ### Filtering, and a bug worth remembering
 
-`/documents` filters on status, document type, correspondent, a date range and
+`/documents` filters on status, document type, supplier, a date range and
 free text. Free text reaches **into the extraction** — supplier name, invoice
-number, title — not just the `documents` row, so a document whose Paperless
-correspondent says "Acme" but whose invoice was actually read as "Totally
+number, title — not just the `documents` row, so a document whose supplier
+column says "Acme" but whose invoice was actually read as "Totally
 Unknown Trading Co" is findable under either.
 
 The date range is `COALESCE(the extraction's invoice_date, DATE(created_at))`.
@@ -1732,7 +2055,7 @@ exist on purpose. `AuditLog::recent()` serves the first, `paginate()` the
 second.
 
 Filters: action, person, a date range and free text over the details and the
-names. A bare number in the search is read as a **Paperless document id first**,
+names. A bare number in the search is read as a **document number first**,
 because that is what somebody holding a piece of paper actually has, and then as
 text so a numeric reference is not lost. A closing date covers the whole day —
 `created_at <= '2026-03-03'` on its own excludes everything that happened after
@@ -1976,15 +2299,15 @@ and reachable, every stage with evidence.
 
 Most of it held. Two things did not:
 
-**The PDF download had no size limit.** `downloadOriginal()` checked the `%PDF-`
-magic bytes and deleted a partial, but nothing capped the length — so a
-misconfigured or hostile Paperless could stream until the volume filled, taking
-down every other document, the page images and the log with it.
+**The PDF fetch had no size limit.** The download checked the `%PDF-` magic
+bytes and deleted a partial, but nothing capped the length — so a misconfigured
+or hostile far end could stream until the volume filled, taking down every other
+document, the page images and the log with it.
 
-Fixed with `uploads.max_pdf_bytes` (100MB, `MAX_PDF_BYTES` in `.env`) passed
-down to `Http::download()`. It aborts **mid-transfer** via a cURL progress
-callback rather than measuring afterwards, because measuring afterwards is
-measuring after the disk is full. `CURLOPT_MAXFILESIZE` would not do: it only
+Fixed at the time with a byte ceiling passed down to `Http::download()`, which
+aborts **mid-transfer** via a cURL progress callback rather than measuring
+afterwards, because measuring afterwards is measuring after the disk is full.
+`CURLOPT_MAXFILESIZE` would not do: it only
 works when the far end sends a `Content-Length`, and a streamed response sends
 none. Demonstrated against a server streaming an endless file: aborted
 immediately, partial deleted, and a legible message.
@@ -1997,8 +2320,8 @@ no obvious reason why.
 ### What held
 
 - **CSRF**: all 24 POST forms carry `csrf_field()`; every non-GET route carries
-  the middleware bar the webhook (not a browser form) and the Clear Books
-  callback (a redirect with no token to carry, guarded by a `state` parameter).
+  the middleware bar the Clear Books callback (a redirect with no token to
+  carry, guarded by a `state` parameter).
 - **Prepared statements**: no variable is interpolated into SQL anywhere. The
   only concatenation is `LIMIT`/`OFFSET`, every one int-cast and clamped, and
   the table alias in `filterClause()`, which is a literal.
@@ -2008,9 +2331,6 @@ no obvious reason why.
 - **Login throttling**: exercised live — four wrong passwords answered "not
   recognised", the fifth locked out for fifteen minutes. Counted per username
   *and* per address, at three times the limit for the address.
-- **Webhook secret**: refused with 401 for no secret, a wrong secret, and a
-  secret sharing a prefix. Compared with `hash_equals` on all three routes it
-  can arrive by (header, query, body).
 - **No secret reaches a browser**: templates read only non-secret settings, and
   every `Response::json()` passes a literal. Both are now assertions, because
   `Setting::get()` decrypts rather than returning ciphertext and so offers no
@@ -2018,10 +2338,17 @@ no obvious reason why.
 
 ### Upload paths, precisely
 
-There is exactly **one** browser upload path in the application: the logo, on
-`/admin/branding`. PDFs are never uploaded — they are fetched from Paperless
-over the API, which is why the size ceiling lives on the download rather than on
-a form.
+There are **two** browser upload paths since Prompt 15: the logo on
+`/admin/branding`, and documents on `/documents/upload`. Both go through
+`App\Core\Upload` for the checks that are about a browser — PHP's own upload
+error, `is_uploaded_file()`, the size, the extension and a `finfo` sniff — and
+then diverge on the deep check. A logo has to decode as an image; a document has
+to begin `%PDF-`, and that check lives in `Ingestor` so every ingest route gets
+it rather than only this one.
+
+The document ceiling is `ingest_max_upload_mb`, floored by PHP's
+`upload_max_filesize` and `post_max_size`. The old ceiling on the *download*
+survives in `Http::download()`, which nothing calls today — see §12.
 
 ### Documentation drift is now asserted
 
@@ -2056,8 +2383,8 @@ GitHub — the failure message says so rather than just reporting a clone error.
 |---|---|
 | No Composer anything | InvoGrid has no `vendor/`. `install-composer` and `composer-install` are gone rather than carried over dead. |
 | **poppler is a first-class check** | It is the one local dependency without which no document can be read at all. The installer refuses to finish without `pdftoppm`, and `status` reports it above the fold. |
-| Two cron jobs, not one | The queue worker every minute, the Clear Books cache hourly, plus the nightly backup. Without the first, nothing is ever processed. |
-| `webhook-secret` | Generates, stores and prints the Paperless shared secret. Printed once, because that is the only moment anybody can copy it into the Paperless workflow. |
+| Three cron jobs, not one | The queue worker every minute, the Clear Books cache hourly, the invoice sync every five minutes, plus the nightly backup. Without the first, nothing is ever processed. |
+| Backup **must** include `storage/pdf` | InvoGrid holds the only copy of an uploaded document. `reset-storage` says so in bold, which it did not need to when the PDFs came from somewhere else. |
 | `test` | Runs all three harnesses. "Is this install sound?" is a question with an answer. |
 | `queue` / `refresh` / `retry` | The pipeline has command-line equivalents; the sibling projects have no pipeline. |
 | Backup skips `storage/pages` | A page image is re-rendered from the PDF beside it in seconds. Including them doubles every backup to save a step that costs nothing. |
@@ -2113,8 +2440,8 @@ watching it fail.
 ### What was tested, and what could not be
 
 Run for real on the development machine: `help`, `status`, `users`, `stats`,
-`doctor`, `health`, `migrate --status`, `queue --status`, `webhook-secret`
-(rotated and restored), `test` (all three harnesses), every argument-error path,
+`doctor`, `health`, `migrate --status`, `queue --status`,
+`test` (all three harnesses), every argument-error path,
 the root guard, and `install.sh --dry-run` end to end.
 
 `create-admin.php` accepting a piped password was tested for real, because
@@ -2125,3 +2452,1058 @@ last step.
 service — package installation, the vhosts, the firewall, cron installation,
 backup and restore. Those are read-checked and syntax-checked only. First
 install on a real server should be `--dry-run` first.
+
+## 31. The Clear Books invoice sync
+
+Prompt 14. A local copy of every purchase document Clear Books already holds, so
+that the matching and deduplication work in Prompts 17 and 18 can ask *has this
+invoice already been posted?* without asking Clear Books per document.
+
+This prompt built the sync only. **`InvoiceMatcher::lookup()` is now the reader**
+(§33), which changes one thing recorded below: the note under *Deletion, and the
+two guards on it* says rows may be deleted because nothing in InvoGrid points at
+them. Something does now — a `submissions` row holds the `clearbooks_id` of a
+linked record — but the reasoning survives, because it holds Clear Books'
+identifier and not a foreign key into this table. A record deleted in Clear Books
+takes its row here with it, and the link to it still reads, still opens in Clear
+Books, and is still the honest statement of what was attached to what.
+
+### Why a copy at all
+
+Clear Books has **no search endpoint** for purchase documents. The only way to
+find one is to walk the list. A lookup per arriving document would therefore be
+a full walk per document, against an API that throttles above five requests a
+second — and it would put every review behind somebody else's uptime. So the
+list is fetched on a schedule and kept locally, which is the reasoning that
+produced `clearbooks_cache` as well.
+
+### One table for two endpoints
+
+`GET purchases/bills` and `GET purchases/creditNotes`, both into
+`clearbooks_invoices`. Clear Books' `id` is unique across the two — confirmed,
+not assumed — so one `clearbooks_id` key covers both, and `purchase_type`
+records which endpoint a row came from. That last part matters: the two are
+posted to differently, and a duplicate matched against the wrong kind is a wrong
+answer rather than a near miss.
+
+Seven columns are broken out because a lookup will use them — `document_number`,
+`supplier_id`, `document_date`, `due_date`, `reference`, `gross_amount`,
+`purchase_type` — and **everything else stays in `raw_json`**. Guessing now
+which of Clear Books' remaining fields a matcher will want is how a schema
+acquires columns that are always NULL; the whole record is kept, so promoting a
+field to a column later is an `UPDATE` rather than a re-sync.
+
+Two deviations from the prompt's column list, both deliberate:
+
+- **`document_date`, not `date`.** It holds Clear Books' `date` field. `date`
+  alone reads as a type rather than a column in every query that follows, and a
+  credit note's date is not an invoice date.
+- **`clearbooks_id`, not `id`.** `id` is the local key, as in every other table
+  here; Clear Books' identifier is theirs, and is `VARCHAR(64)` for the same
+  reason `clearbooks_cache.remote_id` is — so the two join without a cast.
+
+### The gross amount is the one guess in here
+
+Clear Books' specification does not say what a total is called on a purchase
+document, and the sample responses on file carry none at all.
+`ClearbooksInvoice::gross()` therefore takes a reported total under any of the
+names it could plausibly have (`grossAmount`, `totalAmount`, `total`, `gross`,
+`amountGross`, or a `totals`/`amounts` sub-object) and otherwise **works it out
+from the line items**, using the VAT percentages already cached from their own
+API.
+
+Which of the two happened is counted and reported — by the cron script, by the
+flash message and on the settings screen. So the first real run answers the
+question this guesswork exists because of: if every row is derived, the reported
+total has a name not on that list, and adding it is one line.
+
+The **sign is left alone**. A purchase refund is a bill with negative amounts
+and a credit note is positive at creation; an absolute value would throw away
+the distinction a duplicate check needs most.
+
+### Deletion, and the two guards on it
+
+Clear Books is the sole source of truth, as it is for suppliers. A document
+deleted there is deleted here on the next run — **deleted**, not deactivated,
+which is the opposite of what `clearbooks_cache` does. The two differ because a
+deactivated supplier is kept for the documents already pointing at it, and
+nothing points at these rows at all yet. `ClearbooksInvoice::deleteMissing()`
+carries that reasoning, and is where it has to be re-made if anything ever does.
+
+Two guards:
+
+- **Both fetches complete before anything is deleted.** A failure part way
+  through raises, having written what it already read — which is harmless, those
+  documents really are in Clear Books — and having deleted nothing. Deleting
+  from a half-read list would remove documents that exist.
+- **An empty result deletes nothing**, exactly as `deactivateMissing()` refuses
+  one. Nothing coming back at all is far likelier to be a failed fetch than a
+  business that deleted every purchase document it ever had.
+
+The seen-ids list is judged for the table as a whole rather than per endpoint.
+Per-endpoint would have to read "no credit notes came back" as suspicious, and
+for most businesses it is simply true — which would leave a deleted credit note
+in the table for ever.
+
+### The schedule is a database row, not a crontab line
+
+Cron runs `bin/sync-invoices.php` every five minutes; the script decides whether
+a run is due, from `clearbooks_invoice_sync_interval_minutes`. So changing the
+schedule is a form field on the Clear Books screen rather than root editing
+`/etc/cron.d/invogrid`, and **the "Sync now" button and the cron job are the
+same code path** — which is the only arrangement in which the button proves
+anything about the schedule.
+
+0 turns the schedule off and leaves the button. Otherwise five minutes to a
+week: below five, a full walk of somebody's ledger would be running more or less
+continuously; above a week, "off" says it better.
+
+The interval is measured from when the last run **started**, so "every 30
+minutes" means every 30 minutes rather than 30 minutes after however long the
+last one took. A failed run stamps the time too, so a broken integration is
+retried on the schedule instead of on every cron tick.
+
+`clearbooks_invoice_sync_last_run` holds the outcome as a JSON blob — time,
+ok/failed, trigger, message, per-type counts, deletions, seconds. A blob rather
+than columns because it is displayed and never queried, and because a failure
+needs somewhere to put a sentence. **A failed run is recorded before the
+exception is re-thrown**: a last-run time that quietly stops advancing is how a
+stale duplicate check comes to be trusted.
+
+### Neither control is on the Settings screen
+
+`clearbooks_invoice_sync_interval_minutes` is not in `SettingSchema`: it belongs
+beside the sync it governs, and two controls for one value is worse than one in
+the less obvious place. The Clear Books screen carries the interval, the button, the last-run
+panel and the eight most recently dated rows — that last as a sanity check that
+what came back is what an administrator expected.
+
+### Streaming, because this list has no ceiling
+
+`ClearBooksClient::walkPages()` now hands each record to a callback;
+`allPages()` is the same walk with the array collected, and the reference lists
+still use it. The purchase lists do not: ten years of trading is tens of
+thousands of records, each carrying its line items, and accumulating all of them
+before the first is written is how a cron job exhausts a server's memory.
+`eachPurchase()` is the streaming reader.
+
+`deleteMissing()` batches its `NOT IN` at a thousand ids for the matching
+reason — one statement with fifty thousand placeholders is one MariaDB refuses
+to prepare.
+
+### Locking
+
+`InvoiceSync::lock()` owns `storage/invoices.lock`, and **both** the cron script
+and the controller take it, so a person pressing Sync now during a scheduled run
+waits rather than sending a second walk at a rate-limited API. `tests/smoke.php`
+asserts that both callers do.
+
+Its own file rather than `clearbooks.lock`: a long invoice sync must not be able
+to starve the cache refresh that matching depends on. The one thing the two
+genuinely must not do at once — spend the single-use refresh token twice — is
+already held under a named database lock inside `ClearBooksClient`.
+
+The web action also lifts the time limit and sets `ignore_user_abort(true)`. A
+gateway timeout leaves the fetch half done, and half done is the one state that
+must not be reconciled against, so the run is allowed to reach its own end.
+
+### How it was verified
+
+There is no live Clear Books connection on the development machine, so a
+stand-in API was written: a PHP built-in server answering
+`/v1/accounting/purchases/{bills|creditNotes}` with `?page=` and `?limit=`
+honoured and the `X-Pagination-*` headers set, serving records from a file a
+test could edit between runs.
+
+Against it, end to end:
+
+| Case | Result |
+|---|---|
+| 250 bills + 3 credit notes | fetched in two pages plus one; 253 rows stored, columns correct |
+| pagination | asserted from the stand-in's own request log — page 1 and page 2 of bills, at `limit=200` |
+| a bill and a credit note deleted remotely, one edited | 0 new, 1 changed, 248 unchanged, **2 deleted** |
+| both endpoints returning nothing | 251 rows untouched, and the run says why |
+| the *last* credit note deleted | its row removed — the case a per-endpoint guard would have got wrong |
+| the API unreachable | run fails, exit 1, and the failure shows on the settings screen |
+| the browser | signed in; schedule rejected at 3 and accepted at 30; **Sync now** fetched 12 bills and 4 credit notes |
+
+`tests/smoke.php` gained nine assertions covering the enum, the seeded settings,
+the column mapping, the gross rules including the sign, the id-less record, both
+deletion guards, the schedule arithmetic, and that both callers take the lock.
+The deletion tests name every real row in their "seen" list — the supplier test
+in §28 learned that lesson the hard way, and a check that empties the table it
+is checking is worse than no check.
+
+---
+
+## 32. The Existing / New Invoice branch
+
+Prompt 16, **as corrected by Prompt 17** — read this section with §33
+beside it. Prompt 16 forked the *pipeline* the moment the transcription landed,
+and skipped extraction on one arm. Prompt 17 reversed that: the decision is
+still made here, and it is still recorded here, but both flows now run every
+stage and part company at the end of matching. The paragraphs below are marked
+where they describe what changed.
+
+### The decision
+
+A **Clearbooks Number** is a number written on the page by hand, almost always
+in red pen. It is a reference to an invoice that is already in Clear Books — so
+a document carrying one is not a bill to post, it is a scan belonging to a
+record that exists. Those are two different jobs.
+
+`OcrStage::route()` decides, immediately after the OCR response is stored:
+
+| On the page | Route | Status |
+|---|---|---|
+| a usable Clearbooks Number | `existing_invoice` | `ocr_done` |
+| none | `new_invoice` | `ocr_done` |
+
+**The status is the same in both rows, and that is Prompt 17s correction.**
+Prompt 16 returned `existing_invoice` here, which skipped the extraction — four
+model calls saved on a question the handwriting had already answered. It also
+left the document with no supplier, no dates, no line items and nothing to
+search on, and forked the pipeline in two so every later change to extraction
+had to be made twice. §33 has the full reasoning. The route is still decided
+here, because this is the stage that reads the number; it is *acted* on at the
+end of matching.
+
+**"Usable" means digits only** (`OcrResult::isUsableNumber()`). The prompt is
+explicit about this and says why: a circled code with letters in it is a
+Project, a different field with a different meaning. A value that came back
+non-numeric is a misread, so it does **not** route — but it is still stored, and
+the `route` event says what it was and why it was not used. Silently dropping it
+would leave nothing to answer the person holding the page and asking why their
+document went the other way.
+
+### Two columns, because two questions
+
+- **`documents.status`** — where the document is *now*. `existing_invoice` is a
+  status, so the pipeline runner can act on the branch at all: `Pipeline` maps
+  status to stage, and a fork the status cannot express is a fork the runner
+  cannot see. **Prompt 17 moved it**: it is now what the matching stage produces
+  and the linking stage consumes, rather than what the OCR stage produces.
+- **`documents.route`** — which flow it is *on*, written once and kept. The
+  status alone cannot answer this. Every status up to and including `matching`
+  is shared by both flows, so nothing but this says which way a document is
+  going; and once the Existing Invoice flow rejoins the ordinary statuses at
+  `submitted` — as it does, since it ends in a Clear Books record like
+  everything else — a document that took the branch would be indistinguishable
+  from one that did not.
+
+**Prompt 17 made `route` load-bearing rather than descriptive.** Under Prompt 16
+the status carried the fork and the route merely recorded it; now the route is
+the input `MatchStage` reads to decide where a document goes, and flipping it is
+how a person overrules the decision.
+
+`route` is **NULL until OCR decides**. A document that has not been read is not
+on either flow, and defaulting it to `new_invoice` would state a guess as a
+fact.
+
+### What a person can do about it
+
+The decision rests on handwriting read off a scan, so it has to be reversible in
+both directions:
+
+- **onto** the Existing Invoice flow — the document page's reset control offers
+  `existing_invoice` from `needs_review` and `ready_to_submit`, and sets the
+  route with it;
+- **off** it — the queue's "post it as a new invoice", which flips the route and
+  re-runs the matching stage.
+
+The alternative — ignore the document and upload it again — throws away the PDF,
+the page images, the transcription and now the extraction as well.
+
+### What consumes it
+
+`LinkStage` — §33, Prompt 17. Three notes here were written while nothing did,
+and are corrected rather than deleted so the reasoning is readable in both
+states:
+
+- there is now a **`Pipeline::STAGES` entry** for it, `link`;
+- it is now **in `Document::stuck()`'s machine list**. While nothing ran the
+  status, every document there was sitting still by design and counting them
+  would have filled the dashboard's one real alarm with documents nothing was
+  wrong with. Now a document sitting in it for half an hour means the queue has
+  stopped, exactly as one sitting in `extracted` does;
+- it **is** in the dashboard's in-flight count, because it is work that has not
+  finished. `needs_link` is not — that has its own card beside "Needs review",
+  because it is a queue somebody has to work rather than something in motion.
+
+### The `### Notes` section, and why it went with this
+
+The two halves are the same change. The OCR prompt used to append a prose
+restatement of its own structured output to the end of the transcription — the
+n8n flow's only way of carrying structure, since it had no database. Routing on
+`clearbooksNumber` meant reading it reliably, and the value was in two places
+saying two things. So the appended section is gone (`ocr` v3), the fields are
+columns (`clearbooks_number`, `project_code`, `annotations_json`), and the two
+extraction prompts that referred to the section were re-seeded. §15 has the
+detail.
+
+---
+
+## 33. The Existing Invoice route
+
+Prompt 17. The other arm of the branch, from the route §32 records to a PDF
+sitting on the right record in somebody's accounts.
+
+A document is here because a **Clearbooks Number** was written on it in red pen.
+That number is a reference to an invoice already in Clear Books, so there is
+nothing to post: the job is to find that record and put the evidence on it.
+
+### Both flows run the same pipeline, and this is the correction §32 needed
+
+Prompt 16 forked at the transcription: a document carrying a Clearbooks Number
+went straight to a waiting status and **skipped extraction**, saving four model
+calls on a question the handwriting had already answered. That reasoning was
+sound about the calls and wrong about everything else, and this prompt reverses
+it.
+
+- **A scan of an existing invoice is still a document.** Somebody will search
+  for it, report on it, and read it next year. Skipping extraction left it with
+  no supplier, no dates, no line items, no custom fields — a blank row in every
+  list and nothing for any future feature to work with.
+- **Two flows that diverge at stage two are two pipelines.** Every later change
+  to extraction or matching would have had to be made twice, or would silently
+  have applied to half the documents.
+- **The checksum wants real values.** It compares an invoice date and a gross
+  total, and the extraction is what produces those properly. The earlier version
+  had to scrape them out of the transcription with regular expressions, which is
+  exactly the guesswork the extraction stage exists to replace.
+
+So:
+
+```
+received → ocr_pending → ocr_done → extracting → extracted → matching ─┬─ route = new_invoice
+                                                                       │    → needs_review
+                                                                       │    → ready_to_submit → submitted
+                                                                       │
+                                                                       └─ route = existing_invoice
+                                                                            → existing_invoice
+                                                                                 ↓ LinkStage
+                                                       ┌─ number found one record, checksum holds → submitted
+                                                       └─ anything else → needs_link → /existing
+```
+
+`OcrStage::route()` still makes the decision — it is the stage that reads the
+handwritten number — but it now writes `documents.route` and returns `ocr_done`
+like every other document. `MatchStage` reads the route on its way **out**.
+`tests/smoke.php` asserts that `ocr_pending → existing_invoice` is *not* a legal
+transition, so a future change cannot quietly reinstate the skip.
+
+### What the matching stage does with an existing invoice
+
+Everything, and then sends it to the linking stage **whatever the entities
+did**. That is not laxness, and the difference is worth stating: the things that
+gate a submission gate a **creation**. An unresolved account code decides which
+nominal a new bill is posted to; a VAT rate decides what is reclaimed; the
+credit-note/refund question (§24) decides which way money moves. None of that is
+asked here, because nothing is posted — the record was entered by a person
+months ago and InvoGrid is attaching a scan to it.
+
+What was unresolved is still written down. `entity_matches`, the review notes
+and `needs_review` on the extraction are all set exactly as they are for any
+other document, so nothing is lost and a person can see it. It simply does not
+hold the document up. The gate on this flow is the checksum, and it is stricter
+than anything the matching stage applies.
+
+### The key, and the checksum on it
+
+**The Clearbooks Number is the primary key.** `InvoiceMatcher::lookup()` asks
+`clearbooks_invoices` — the local copy §31 builds — for the purchase document
+whose `document_number` it is, comparing twice in one statement:
+
+1. **exactly as written**, which uses the index on `document_number`;
+2. **the digits alone, leading zeros dropped from both sides**, which is what
+   makes "80421" in red pen find a record Clear Books calls `PUR0080421`.
+
+That second pass is a **normalisation, not a tolerance**: 80421 and 80422 stay
+two different numbers. What it settles is that Clear Books writes a prefix and a
+person writing on a page does not.
+
+**Two records answering to one number resolve to nothing** — the same rule §20
+holds to for an ambiguous supplier name, and for a heavier reason: guessing
+wrong attaches this document's PDF to somebody else's invoice.
+
+A hit on the number is already a high probability of a match.
+`InvoiceMatcher::check()` is the checksum on that hit:
+
+| | Agrees when |
+|---|---|
+| Invoice date | `extractions.invoice_date` is the same day as the record's `document_date` |
+| Gross total | `extractions.gross_amount` is the same figure as the record's `gross_amount`, to the penny |
+
+**Both must agree, exactly. There are no tolerances anywhere in this**, and
+`tests/smoke.php` asserts that no settings row containing "tolerance" exists, so
+one cannot appear without somebody arguing for it.
+
+A tolerance would be a licence to attach a scan to the wrong invoice without
+anybody noticing. A hit on the number whose date or total does not agree is
+precisely the shape a **misread digit** takes, and it costs a person ten seconds
+to settle on the queue. The cost of the other mistake is a document filed
+against somebody else's invoice, found — if it is found — during an audit.
+
+Two things are worth naming as *not* tolerances:
+
+- **The absolute value of the total is compared.** The sync keeps Clear Books'
+  sign because it tells a credit note from a purchase refund (§24); a page never
+  prints one — a credit note says £240.00, not -£240.00 — so comparing signed
+  figures would send every credit note and every refund to manual review for a
+  convention rather than a difference. The figure still has to be identical to
+  the penny.
+- **Amounts are compared as whole pence, as integers.** `413.28` and
+  `413.2800000001` are the same invoice, and `===` on floats is how that stops
+  being true on somebody else's machine.
+
+A value missing on either side is **not** an agreement. It cannot be confirmed,
+so it is not confirmed, and the document goes to a person.
+
+### Nothing in Clear Books is changed
+
+The attachment is the **only** call this route makes — asserted end to end
+against the stand-in, by counting every request the stage made. The record was
+entered by a person and is not InvoGrid's to edit; a difference between the page
+and the ledger is theirs to settle, not this application's to overwrite.
+
+The endpoint is `purchases/{purchaseType}/{id}/attachments/{fileName}`, POST,
+raw `application/octet-stream`. **The credit-note path mirrors the bill path
+exactly** — re-read from the published OpenAPI spec (§19) rather than assumed:
+there is **one** parameterised attachment path, not one per document type, with
+`{purchaseType}` a path parameter over bills, creditNotes and expenses and
+identical methods and media types for all three. Nothing needed adding:
+`ClearBooksClient::attachToPurchase()` has taken the type as a checked path
+segment since submission was built.
+
+The spec also carries `GET .../attachments`, `GET .../attachments/{id}` and a
+`DELETE`. None is used, deliberately — InvoGrid has no business deleting from a
+ledger, and §31 records the same rule for the sync.
+
+### Attaching first, which is the opposite of SubmitStage
+
+`SubmitStage` records the submission **before** attaching the PDF, because the
+irreversible act there is creating a record in somebody's accounts and a crash
+between the two would leave a bill InvoGrid thinks it never sent (§23).
+
+Here the attachment **is** the act. So `LinkStage` attaches first and only
+claims the link once the file is on the record, and a failed attachment throws
+rather than warning. A crash between the two leaves an attachment and no local
+record, and the retry attaches again under the same name — untidy, and far
+better than a document marked linked whose evidence never arrived anywhere.
+
+### Where everything is written
+
+"The local database is updated with the matched Clear Books ID and all extracted
+data is saved in the correct places" — most of which has already happened by the
+time this stage runs, which is the point of running the whole pipeline. The
+extraction wrote the header, the lines and the custom fields; the matching stage
+wrote `entity_matches` and the supplier. What is left is what only this stage
+knows:
+
+| What | Where | Why there |
+|---|---|---|
+| The Clear Books id and URL | a `submissions` row | The same three facts a submission records, so "Open in Clear Books", the document list's join and the idempotency check all work with no special case |
+| The id and document number | `clearbooks_bill_id` and `clearbooks_document_number` custom fields, via `SubmitStage::recordProducedFields()` | Those fields exist for a value produced by *reaching* Clear Books rather than read off a page. One implementation, shared, so the two cannot drift |
+| The supplier | `documents.matched_supplier_id` | The ledger's own answer beats a guess from a letterhead, and it resolves a document the name fallback could not place |
+| The document type | `documents.doc_type` | The endpoint the record came back on is a fact, not a classification — which is why this flow never asks the credit-note/refund question |
+
+The `submissions` row's `response_json` carries `linked: true`, the Clearbooks
+Number it was linked by, the matched record's own fields and the checksum that
+allowed it. A row that attached a PDF to an existing record is therefore never
+mistaken for one that created a record, which is the one thing the shared table
+could otherwise lose.
+
+**The project code is not pushed anywhere**, because there is nowhere to push
+it: Clear Books has no projects endpoint and no field for one on a purchase
+document (§19). It stays on the OCR result and in the custom field values, and
+"Open in Clear Books" is how a person sets it — exactly as for a submitted
+document.
+
+**`ocr_results.clearbooks_number` is never rewritten**, including when somebody
+corrects it on the queue. That column is the record of what a model read off a
+page, the same as an extraction is; overwriting it would destroy the evidence
+that the reading was wrong, which is the only way anybody would notice the
+prompt needed work. The correction lives on the submission, the audit row and
+the event.
+
+### Why `submitted` rather than a `linked` status
+
+Reusing it. §32 anticipated this: `documents.route` exists precisely because the
+existing-invoice flow "rejoins the ordinary statuses further down, since it ends
+in a Clear Books record like everything else". A second terminal status meaning
+*this document has reached its Clear Books record* would have to be added to the
+dashboard, the queue counts, the document list, the stuck check and every
+`in_array($status, [...])` in the templates, in order to say something `route`
+already says better.
+
+### The queue: three actions, and nothing that resolves itself
+
+`/existing`, `queue.view` to look and `review.resolve` to act. A row shows the
+Clearbooks Number, the extracted date and total — the two values the checksum
+compares — and the reason the match stopped, so the queue can be worked in the
+order of what is actually wrong with it.
+
+| Action | What it does | Audit action |
+|---|---|---|
+| **Link it** | The number is looked up and the checksum re-run; the document is linked | `document.linked` |
+| **Post it as a new invoice** | Flips `route` and re-runs the matching stage; the document lands in the ordinary review queue | `document.route_changed` |
+| **Delete it** | The row, the files and everything derived from it | `document.deleted` |
+
+Four details:
+
+- **The number field arrives holding what was read off the page.** Correcting a
+  digit is the commonest fix; leaving it alone and pressing Link is "look it up
+  again", which is the commonest *other* fix, because the invoice sync runs on a
+  schedule and the record may have been entered since. That is why there is no
+  fourth action.
+- **"Post it as a new invoice" re-reads nothing.** Both flows ran the identical
+  pipeline, so the document already has its transcription, extraction and entity
+  matches; only the matching stage's exit was different. So the route is flipped
+  and `MatchStage::recheck()` runs, taking the other exit. Re-deciding through
+  the one implementation is the point — a second copy of "where does this
+  document go now" would disagree with the stage eventually, and invisibly.
+- **A person may overrule the checksum; they may not overrule the lookup.** That
+  is the trade the exactness buys: the machine never guesses, and a person
+  always can. Somebody holding the scan with the record on screen beside it is
+  the better authority — the same rule the review screen holds to about the
+  extraction's numbers — and what they overrode is recorded on the submission so
+  the decision is not invisible afterwards. A number matching nothing, or two
+  things, is not a judgement call: there is no record to link to, or no way to
+  tell which.
+- **The lookup is re-run when the page is opened** rather than read off the
+  event the stage recorded. An event saying "matches nothing" that was true an
+  hour ago is exactly what would send somebody off to retype a number that was
+  already right.
+
+### Deleting, which is the only irreversible thing in here
+
+`Document::delete()` removes the stored PDF and the page images, then the row —
+and the database cascades to pages, OCR results, extractions, entity matches,
+events, jobs and submissions. Enumerating those here would be a second list to
+keep in step with the schema.
+
+Three things make it survivable:
+
+- **A reason is required**, as it is for the review screen's ignore action. Six
+  months later somebody will ask what happened to a scan they remember
+  uploading.
+- **The audit row outlives the document.** `audit_log.document_id` is
+  `ON DELETE SET NULL` precisely so the log can describe something that no
+  longer exists, so the controller writes the row *before* the delete, with the
+  document's number, filename, arrival time and Clearbooks Number in the text
+  where a nulled column cannot take them away.
+- **The files go before the row**, and `clearstatcache()` goes before the
+  `rmdir`. That last part is load-bearing rather than defensive: PHP caches what
+  it knows about a path, the `filesize` and `unlink` above have just made that
+  knowledge wrong, and without it every deleted document leaves an empty folder
+  behind for ever. Verified on this project's own storage — the same `rmdir`
+  succeeds a line later once the cache is dropped.
+
+It is `documents.delete`, its own capability, held by `reviewer` — §6 has the
+reasoning and how to move it.
+
+### What was verified
+
+There is no live Clear Books connection on the development machine, so the same
+stand-in API §31 describes was used, extended with the attachment endpoint.
+Documents were driven from `matching` through the real `MatchStage` and the real
+`LinkStage`, so the fork is exercised rather than assumed.
+
+| Case | Result |
+|---|---|
+| an existing invoice with the number, date and total agreeing | linked, `submitted`, PDF attached, and it kept its full extraction, line items, custom fields and entity matches |
+| the same, counting every request made | **one** call to Clear Books — the attachment, and nothing else |
+| a total 28p out | `needs_link`; nothing attached; the event names the gross total |
+| a date one day out | `needs_link`; the event names the invoice date |
+| a credit note, whose stored gross is negative | linked; the figure is compared without the sign, and the PDF goes to `purchases/creditNotes` |
+| a number matching nothing | `needs_link`, and the event quotes the sync's last-run time |
+| a number matching two records | `needs_link`, and both are named |
+| the queue's Link on a record the checksum refused | linked, because a person overrode it, with the failed checksum recorded on the submission |
+| the queue's "post it as a new invoice" | lands at `needs_review` in the ordinary queue, with the same extraction and OCR rows it already had |
+| the queue's delete | row, extraction, PDF and page images gone; the audit row survives with `document_id` NULL and the id in its text |
+| attaching switched off | linked, reference recorded, no call made, and the event says why |
+| Clear Books refusing the attachment | the stage fails rather than claiming a link; nothing recorded as linked |
+| the browser | all three queue actions driven through the real forms, signed in |
+
+`tests/smoke.php` gained eighteen assertions, and one existing one was inverted:
+the OCR-routing check now asserts that **every** document goes to `ocr_done`, so
+reinstating the skip fails a test. The new ones cover the matching stage forking
+on the route and nothing else, the transitions the fork and the queue need, the
+retry origin, the four checksum shapes including the one-day and one-penny near
+misses, the missing-value cases, the credit-note sign, the pence comparison, the
+absence of any tolerance setting, the lookup's two spellings and its refusal to
+guess, and the resource-to-type mapping. `tests/pipeline.php` gained the Prompt
+17 block: ten methods that have to exist and do something.
+
+---
+
+## 34. The duplicate check on the New Invoice route
+
+Prompt 18. The gap §32 and §33 left, and the one place in this application
+where the wrong answer costs money rather than time.
+
+### The gap
+
+The whole Existing Invoice branch turns on somebody having written a number on
+the page in red pen. That annotation is what routes a document, and it is a
+statement about *the page*, not about the ledger.
+
+An invoice already in Clear Books very often carries no such number. It was
+entered by hand months ago and nobody has ever printed it; or a colleague
+scanned it once before, under a different image, and this is the second copy. So
+it takes the New Invoice route from end to end, is extracted and matched
+perfectly well, and arrives at the review queue looking exactly like a bill
+nobody has posted — with a **Submit to Clear Books** button on it.
+
+Submitting it puts the same purchase into somebody's accounts twice, and that is
+found by a payment run rather than by anything in here. Every other failure in
+this application is visible on a screen; this one is not.
+
+So a New Invoice document is compared against `clearbooks_invoices` — the local
+copy §31 builds — before it is offered for submission.
+
+### Where the check runs, and why not earlier
+
+At the **end of the matching stage**, on the New Invoice arm, and *before* the
+ready/needs-review decision rather than after it.
+
+`MatchStage::run()` therefore has four exits:
+
+```
+route = existing_invoice          → existing_invoice        (§33, unchanged)
+route = new_invoice, a duplicate  → possible_duplicate      (this section)
+route = new_invoice, everything resolved → ready_to_submit
+route = new_invoice, something did not   → needs_review
+```
+
+Three reasons for that position, in order of how much they mattered:
+
+- **The supplier is a signal, and this stage is what produces it.** The check
+  compares `documents.matched_supplier_id` against Clear Books' own
+  `supplier_id`. Run after extraction and before matching, it would have had
+  only two strings typed by two different people, and would have thrown away its
+  best means of telling one supplier's £300 invoice from another's.
+- **There is no stage to add, and adding one would be the wrong shape.** A
+  document whose duplicate check has not run is not waiting for a machine; the
+  check is arithmetic against a local table and takes no measurable time. A
+  `dedup` stage would be a status, a registry entry, a handler and a retry
+  origin, in order to express something that is one branch at the end of a stage
+  that already branches.
+- **Before the disposition, not after it.** A document whose entities all
+  resolved would otherwise sit at `ready_to_submit` inviting exactly the double
+  post this exists to stop; one whose entities did not would send somebody off
+  to resolve an account code on a bill they are about to delete.
+
+Everything above the gate still runs and is still written down — `entity_matches`,
+the review notes, `needs_review` on the extraction — exactly as for an
+existing-invoice document (§33). A document confirmed as genuinely new keeps all
+of it and lands wherever the stage would have sent it, because the re-run comes
+straight back through the same code.
+
+`tests/smoke.php` asserts that nothing in `Pipeline::STAGES` consumes
+`possible_duplicate`, so nobody can quietly promote this to a stage without
+arguing for it.
+
+### The comparison: the same one Prompt 17 makes
+
+`DuplicateMatcher` calls `InvoiceMatcher::day()` and `InvoiceMatcher::pence()`
+themselves — the two methods were made public for this — rather than spelling
+them a second time. Two implementations of "the same day" would disagree about
+the same pair of records eventually, and the two screens would then say
+different things about them.
+
+So the rules §33 argues for hold here unchanged:
+
+- **no tolerances anywhere.** The same day, the same figure to the penny;
+- **the absolute value of the total.** The sync keeps Clear Books' own sign
+  because it tells a credit note from a purchase refund; a page never prints
+  one;
+- **whole pence as integers**, so no float equality decides anything;
+- **a value missing on either side is not an agreement.** It cannot be
+  confirmed, so it is not confirmed.
+
+What differs is the question's shape, and it differs completely. `InvoiceMatcher`
+is asked about a document with a **key**: the lookup either finds one record or
+it does not, and the date and total are a checksum on a hit that is already
+almost certain. Nothing here has a key — that is *why* the document is on this
+route — so it has to be recognised by the shape of what it says.
+
+Four signals, and no single one decides:
+
+| Signal | Compared |
+|---|---|
+| Supplier | `documents.matched_supplier_id` against the record's `supplier_id` |
+| Their reference | `extractions.invoice_number` against `reference`, case and separators folded |
+| Invoice date | `extractions.invoice_date` against `document_date`, the same day |
+| Gross total | `extractions.gross_amount` against `gross_amount`, the same pence, unsigned |
+
+**The supplier's reference folds case and separators and nothing else** —
+`INV-2026/0042`, `inv 2026 0042` and `INV20260042` are one reference typed three
+ways. Leading zeros are **not** stripped, which is the one place this differs
+from the Clear Books document-number pass in §33: Clear Books writes its own
+numbers to a fixed width and a person writing one on a page does not, so `80421`
+and `PUR0080421` are the same number; a supplier's reference has no such
+convention behind it, and `0042` against `42` is two references.
+
+An **unresolved supplier is `missing`, not `disagreed`**. It says nothing either
+way, and counting it against the document would quietly make every document
+whose supplier the matcher could not place un-flaggable.
+
+### The threshold, which is the judgement this turns on
+
+**At least two signals agree, and at least one of the two is the gross total or
+the supplier's reference.**
+
+Both halves are load-bearing, and the negative cases are what they are for.
+
+*Two rather than one*, because no single signal is evidence. A business pays
+£49.99 to the same supplier every month; a reference of "1" or "INV001" belongs
+to half the small traders in the country. One agreement is a coincidence that
+would stop something every day — and a queue that cries wolf is a queue that
+gets cleared without being read, which is a worse outcome than not having built
+it at all.
+
+*One of them a money figure or a reference*, because the other two agree by
+themselves constantly. The supplier agrees for every invoice from a regular
+supplier; the date agrees for everything that arrives in the same post.
+Supplier-and-date is two agreements and would stop a weekly delivery every
+single week without once being right.
+
+A genuine duplicate normally agrees on **all four** — it is literally the same
+invoice — so two is already generous. The slack is spent deliberately in the
+direction of catching an extraction that misread one field: **the cost of a
+false positive is ten seconds on a comparison screen; the cost of a false
+negative is the same purchase in the accounts twice.**
+
+There is **no settings row**, and `tests/smoke.php` asserts that none containing
+"duplicate" or "dedup" appears — the same assertion §33 makes about tolerances,
+and for the same reason. A threshold that can be turned down is a check that
+quietly stops running. The natural off switch is the sync itself: a
+`clearbooks_invoices` nobody has filled matches nothing, and every document
+flows through exactly as it did before this prompt. The duplicate queue says so
+on its own face rather than reporting an empty queue as reassurance.
+
+### Narrowing, before judging
+
+`ClearbooksInvoice::findPossibleDuplicates()` fetches; `DuplicateMatcher` judges.
+The split is because the narrowing has to be something the database can do with
+an index and the judgement has to be something a person can read on a screen.
+
+The `WHERE` is an OR of exactly two things, and they are the two the threshold
+requires:
+
+1. **the gross total, to the penny, either sign** — compared as the two literal
+   DECIMAL values rather than with `ABS()`, so `ix_clearbooks_invoices_amount` is
+   used. A function of the column would scan every purchase document the
+   business has ever had;
+2. **the supplier's reference**, exactly as stored and then again with case and
+   separators folded — the same two-pass shape `findByDocumentNumber()` uses
+   (§33), the first spelling using `ix_clearbooks_invoices_reference` and the
+   second catching the same reference written differently.
+
+**Nothing is narrowed on the supplier or the date alone**, and that is the
+point rather than an omission: either would return most of the table. Both are
+still *scored* — they are how a candidate found on the money is confirmed or
+dismissed.
+
+Migration 016 created all four of those indexes in anticipation of this prompt,
+so nothing needed adding.
+
+### `possible_duplicate`, and the one way off it
+
+A status, because the answer is a judgement and there is nowhere else honest to
+put a document waiting for one. Not `needs_review`, which is about resolving
+entities so a record can be created — mixing them would file "correct this
+account code" and "this bill may already be in the accounts" under one heading.
+Not `needs_link`, which asks which record a *known* reference points at.
+
+It sits between `matching` and `needs_review` in `Document::STATUSES`, which is
+its real position: the gate a New Invoice document passes through on the way to
+a disposition, not a state it can reach from one.
+
+**`matching` is the only status that may reach it, and `matching` is the only
+status it may reach.** Together those are the two halves of "the machine decides
+where this goes, and it decides through one implementation":
+
+- confirming a document is genuinely new writes
+  `documents.duplicate_cleared_at` and calls `MatchStage::recheck()`. The stage
+  runs again, reads that column, skips the gate and takes a different exit. A
+  person does not choose a destination — the same rule §33 holds to for "post it
+  as a new invoice", and for the same reason: a second copy of "where does this
+  document go now" would disagree with the stage eventually, and invisibly;
+- the stamp goes on **before** the re-match, because the re-match is what reads
+  it. Reversed, the stage would find the same records and put the document
+  straight back where it came from;
+- **nothing may move a document into it by hand.** `failed` does not list it,
+  though it lists every other waiting status. The screen it waits on is a
+  comparison against records the matcher found, so a document parked there by
+  the document page's reset dropdown would arrive at a page with nothing on one
+  side of it; and a retry resumes at the head of a *stage*, of which this is not
+  one. A failed document whose check should run again is retried from
+  `extracted`, which re-runs matching and re-applies the gate against whatever
+  the sync has fetched since.
+
+There is **no un-clear method**, deliberately. Somebody who decides afterwards
+that a document really was a duplicate deletes it, which is the same answer the
+queue offered them; putting it back to be asked a second time would produce the
+same decision.
+
+### The queue: two actions, and a screen that is one gesture
+
+`/duplicates`, `queue.view` to look and `review.resolve` to act. **The whole
+screen is compare, then decide.** The machine has already done everything it can
+— if it could tell these apart the document would not be here — so the only
+useful thing to build is the view that lets a person tell them apart in ten
+seconds: InvoGrid's reading in one column, the Clear Books record in the next,
+the four signals marked agreed / disagreed / missing between them, and the scan
+itself underneath.
+
+| Action | What it does | Audit action |
+|---|---|---|
+| **It is genuinely new** | Stamps the decision and re-runs the matching stage; the document lands in the ordinary review queue or at ready-to-submit | `document.duplicate_cleared` |
+| **It is the same invoice** | The row, the files and everything derived from it | `document.deleted` |
+
+Five details:
+
+- **The comparison is re-run when the page is opened**, not read off the event
+  the stage recorded — the same rule §33 gives for the Clearbooks Number lookup.
+  The invoice sync runs on a schedule, so the record that stopped this document
+  may since have been edited, withdrawn, or joined by a second one. An hour-old
+  opinion is what would have somebody deleting a document against a record that
+  no longer says what the event says it says.
+- **Candidates that no longer clear the bar are still shown**, below the ones
+  that do and visibly demoted. Hiding them would leave a page headed "possible
+  duplicate" with nothing visible to be a duplicate of, and a near neighbour
+  ruled out by eye is worth ten seconds.
+- **A reason is optional on the first action and required on the second**, which
+  is the asymmetry they deserve: confirming a document is new sends it on to
+  somebody who will see it again, and deleting one is the last time anybody sees
+  it at all.
+- **The audit row names the Clear Books record**, and is written *before* the
+  delete. `audit_log.document_id` is `ON DELETE SET NULL`, so the row survives
+  with its link nulled, which is why the document's own number, filename,
+  reference and total go into the text. Six months later the question is not
+  only "what happened to that scan" but "and which invoice is it, then" — so the
+  candidates are recomputed at the moment of deletion and named in the entry.
+- **There is deliberately no third "link the scan to that record instead".** It
+  would be a second implementation of §33 on a screen about a different
+  question, and the path already exists without one: push the document on, and
+  the document page's reset control offers `existing_invoice` from where it
+  lands.
+
+`ocr_results` is not rewritten by anything here, for the reason §33 gives about
+the Clearbooks Number: it is the record of what a model read off a page.
+
+### Nothing in Clear Books is touched, either way
+
+The check reads the local copy and nothing else — no call is made. Deleting
+removes InvoGrid's copy of the scan and leaves the ledger exactly as it was: the
+record was entered by a person and is not InvoGrid's to edit, which is the same
+rule §31 states for the sync and §33 for the link. The screen says so, because
+"delete" beside a Clear Books record is a word that invites the wrong reading.
+
+### Submission, which needed nothing
+
+Item 5 of the prompt — *submission creates the record in Clear Books and
+attaches the source PDF in the same action, there being no separate write-back
+step now Paperless is gone* — was **already true and is unchanged.**
+`SubmitStage::submit()` has created and attached in one action since §23, and
+Prompt 15 removed the write-back with everything else Paperless-shaped. The
+ordering §23 documents is deliberate and stays: the `submissions` row is written
+*before* the attachment, because there the irreversible act is creating a record
+and a crash between the two would leave a bill InvoGrid thinks it never sent.
+(§33's `LinkStage` inverts that, because there the attachment *is* the act.)
+
+What this prompt changes about submission is only what reaches it: a document
+that plausibly duplicates a synced record never gets a submit button.
+
+### What was verified
+
+Driven against the real tables and the real `MatchStage`, with the same stand-in
+approach §31 and §33 use — there is no live Clear Books connection on the
+development machine, and none is needed, because this check makes no calls.
+
+| Case | Result |
+|---|---|
+| a new invoice matching a synced record on reference, date and total | `possible_duplicate`, and it kept its full extraction, line items, custom fields and entity matches |
+| the same, with the entities deliberately unresolvable | still `possible_duplicate` — the gate is before the disposition, not after it |
+| a document matching nothing | straight through to `needs_review`, and the `dedup` event says what was compared |
+| the same duplicate, already cleared by a person | `needs_review`; the stamp is what stops the re-match putting it back |
+| the same duplicate on the Existing Invoice route | `existing_invoice` — that flow is never asked this question |
+| a reference spelled `inv 2026 0042` against `INV-2026/0042` | agreed; case and separators fold and nothing else does |
+| `0042` against `42` | two different references — leading zeros are not stripped |
+| one penny out and one day out, reference and supplier agreeing | plausible on two signals, which is the misread-field case this exists for |
+| the recurring monthly total, alone | not plausible — one agreement is never enough |
+| a regular supplier and the same date, nothing else | not plausible — two agreements without a money anchor |
+| an unresolved supplier and no reference on the record | both `missing`, neither counted against, and the date and total still carry it |
+| a credit note whose stored gross is negative | found on the same figure; the sign is a convention, not a difference |
+| a record sharing only the date | never fetched as a candidate at all |
+| the queue's "it is genuinely new", through the real form | `ready_to_submit`, redirected to the review screen with its submit button, audit row written |
+| a re-match after that | `ready_to_submit` again, not back to the queue |
+| the queue's delete, through the real form | row, extraction and files gone; the audit row survives with `document_id` NULL, and names PUR0004417 as what it duplicated |
+| the browser | both queue screens and both actions driven signed in, at 1180px |
+
+`tests/smoke.php` gained fifteen assertions: the transitions the gate needs and
+the ones it must not have, the absence of a stage, the shared comparisons, the
+reference normalisation and where it stops, the threshold from both sides, the
+missing-value cases, the narrowing including the sign and the date that must not
+match, and the gate itself driven through the real `MatchStage` four times.
+`tests/pipeline.php` gained the Prompt 18 block: ten methods that have to exist
+and do something.
+
+---
+
+## 35. Presentation: desktop-first, and one mark per field
+
+Prompt 19. Three changes, and they are all about the same thing: a reviewer
+should be able to see what needs doing without hunting for it.
+
+### The content column
+
+`.container` stays at 1200px — a measure for reading prose, which is what most
+administration screens are. The document-facing screens opt into
+`.container-wide` at **1760px** by passing `'wide' => true` to the view:
+
+| Screen | Why |
+|---|---|
+| Dashboard | Six tables and a stat row |
+| Document list, document record | A queue and a pipeline log |
+| Review queue and detail | A scan beside a form with a six-column table in it |
+| Existing invoices, and its detail | A queue, and a scan beside a checksum |
+| Duplicates, and its detail | A queue, and a comparison of four signals |
+
+1760px rather than "no limit": it leaves a margin on a 1920 monitor instead of
+running edge to edge, and a line of table text stops being scannable somewhere
+around there.
+
+Two other pieces of the same change:
+
+- **Tables get real padding above 1150px** — the same breakpoint the navigation
+  bar uses, so a screen has either the desktop treatment throughout or none of
+  it — and every queue states its **column widths** with the `.col-*` helpers.
+  Left to itself, `table-layout: auto` gives the widest column whatever is left,
+  which on the queues means the "what is outstanding" sentence takes two thirds
+  of the page and the supplier wraps onto three lines.
+- The review split is `1fr 1fr` from 1100px and **5fr / 7fr past 1500px**: a
+  sheet of A4 stops getting easier to read somewhere around 700px and an
+  editable line-item table does not, so the extra width goes to the form.
+
+**Below about 1500px the line-item table scrolls sideways inside
+`.table-wrap`.** Six columns, two of them `<select>`s, in a 650px pane is not a
+layout problem with a solution — something has to give, and a horizontal scroll
+on one table is better than truncated pickers or a description box three
+characters wide. It is the behaviour that wrapper exists for. Everything stacks
+below 1100px and the screen still works on a phone; it is simply no longer what
+the layout is designed around.
+
+### The scan viewer
+
+`templates/partials/scan.php`, used by the review screen, the Existing Invoice
+screen, the duplicate comparison and the document record — all four now show the
+scan the same way.
+
+**Page images by default, PDF on request.** The images are already on disk:
+every document is rendered to one PNG per page by `PdfRenderer` before a model
+is shown it (§17), so this costs nothing to serve and shows exactly what the
+extraction was worked out from. An `<img>` paints straight away where the
+`<object>` boots a whole PDF viewer, with its own toolbar and its own idea of
+zoom, inside a box a third of the screen wide.
+
+The bar underneath carries page arrows and a count, an **Actual size** toggle —
+fit-the-width or the image's own pixels, which is what reading a handwritten
+annotation needs, and nothing in between, because a zoom slider is a control
+nobody uses twice — and **View PDF**, which reveals the `<object>` *beneath* the
+images rather than replacing them.
+
+**All of it degrades.** The pages are stacked in one scrolling box in document
+order, the thumbnail strip (past two pages) is ordinary in-page anchors, and
+View PDF is a link to `/documents/{id}/pdf` with `target="_blank"`. The two
+controls that cannot work without a script — the arrows and the zoom toggle —
+ship `hidden` and `app.js` reveals them, so the bar never offers a button that
+does nothing. A modified click on View PDF (ctrl, meta, shift, middle) is left
+alone to open a tab, because hijacking that is the thing people hate most about
+an intercepted link.
+
+### One mark per field
+
+`src/Services/FieldIssues.php`. The screen used to carry one card saying "4
+things to check" above forty inputs, and left the reviewer to work out which
+four boxes were meant — the part of the job the machine can do.
+
+Three signals go in, in descending order of how far they can be trusted:
+
+| Signal | Source | Tone |
+|---|---|---|
+| An unresolved entity | An `entity_matches` row, which names its entity type and, for a line item, its line index. Structural — no guessing | `danger` |
+| A confidence below 1.0 | A match settled by the looser name pass (0.9), or a score in `extractions.confidence` below 0.8 | `warn` |
+| A review note | Prose a stage wrote. The only part that is a guess | `warn` |
+
+Field keys are **the extraction's own column names** — `invoice_date`,
+`gross_amount`, `supplier_name_raw` — plus `custom_<field_key>` and
+`line.<index>.<column>` for a cell of the line table. A template asks for an
+issue with the same string it uses for the input's `name`, so the two cannot
+drift apart silently.
+
+Attribution runs four passes, narrowest first. The first three parse a prefix
+the *pipeline itself* writes and are therefore not guesses:
+
+1. `Matching: Account code on line 2: …` → that cell. A note in this form is
+   **dropped** when the row behind it has already marked the same field, because
+   two indicators saying the same thing on one input reads as two problems. The
+   test is the same regex, not the `Matching: ` prefix — that stage also writes
+   notes with no row behind them (a stale cached supplier id, a credit document
+   waiting to be agreed) and those say something the rows do not.
+2. `Line 3: no account code was chosen.` → line 3's account-code cell. The notes
+   count from 1 and the form's rows from 0.
+3. `Document type:`, `Line items:`, `Setup:`, `Custom fields:`, `Supplier:` —
+   each straight to its field, except `Setup:`, which is about the installation
+   rather than about a box on this document.
+4. Free text a model wrote, read for a phrase from a short list. Deliberately
+   short: "due date" is on it, bare "date" is not. **The cost of a wrong mark is
+   a reviewer editing a value that was right, and then trusting the next mark
+   less.**
+
+**A note that cannot be placed is not attributed by guesswork.** It goes to
+`unplaced()` and is listed at the top of the form, where the banner used to be.
+That list plus an index of links to the marked fields is all that is left up
+there.
+
+`extractions.confidence` is read even though nothing writes it. The column is
+defined as exactly this — migration 001, "per-field confidence, keyed the same
+way as the columns above" — and a screen that ignores a column until somebody
+remembers to wire it up is a screen that stays wrong for a release.
+
+### Where a resolution happens now
+
+Prompt 19 moved the resolution controls to the field, which changed what the
+"Not resolved yet" cards are for:
+
+- **An account code, a VAT rate or the VAT treatment** is a `<select>` in the
+  review form already, and saving re-runs the match — so picking the right one
+  there *is* the resolution. The marked cell is the control that fixes it, and
+  the separate picker card for those three has gone. `POST
+  /review/{id}/entity/{matchId}/pick` still exists and still does the same
+  thing; nothing on the screen needs it for those types.
+- **The supplier** keeps its card, beside the field. The supplier box holds the
+  name read off the letterhead, so typing in it changes what the document says
+  rather than what it points at — the two controls that do point it somewhere
+  (pick one on file, create one in Clear Books) have to be somewhere else, and
+  the field's own mark links to them.
+
+### The read-only twin
+
+`templates/partials/extraction.php` on the document record marks the same values
+the same way, from the same `FieldIssues` object. It cannot be edited, so the
+marks are all it offers — but "which of these forty values is the doubtful one"
+is the same question on both screens and must not have two answers.
+
+The three view helpers that draw a mark — `flag_class()`, `flag_tag()`,
+`flag_notes()` — are in `src/helpers.php` rather than as closures in a template,
+for that reason: three copies of "which class means danger" is three chances for
+one screen to start saying something different from the others. `flag_tag()`
+prints a **word** and not only a colour, because colour alone is not a signal
+every reader receives and telling people which fields to look at is the entire
+point of the mark.
+
+---
+

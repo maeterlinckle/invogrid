@@ -5,10 +5,7 @@ use App\Models\CustomField;
 /**
  * Add or edit one custom field.
  *
- * @var array<string,mixed>|null       $field           Null when adding
- * @var array<int,array<string,mixed>> $paperlessFields
- * @var string|null                    $paperlessError
- * @var array<int,string>              $alreadyPaired   Paperless id => the field using it
+ * @var array<string,mixed>|null $field Null when adding
  */
 
 $isNew  = $field === null;
@@ -28,8 +25,7 @@ $value = static function (string $name, mixed $fallback = '') use ($old, $field)
     return (string) $fallback;
 };
 
-$dataType    = $value('data_type', 'string');
-$paperlessId = $value('paperless_field_id');
+$dataType = $value('data_type', 'string');
 ?>
 
 <div class="page-head">
@@ -100,8 +96,9 @@ $paperlessId = $value('paperless_field_id');
                           ? (string) $old['select_options']
                           : CustomField::optionLines($field['select_options'] ?? null)) ?></textarea>
             <p class="field-hint">
-                One per line, and only used when the type is "one of a list". They are stored in
-                Paperless's own shape, so a value written back needs no translation.
+                One per line, and only used when the type is "one of a list". Each line becomes a
+                choice with a stable id of its own, so a choice can be renamed later without
+                orphaning the documents already stored against it.
             </p>
         </div>
 
@@ -111,7 +108,7 @@ $paperlessId = $value('paperless_field_id');
             <span>
                 In use
                 <span class="field-hint">
-                    Only fields in use are offered to the extraction prompt and written back.
+                    Only fields in use are offered to the extraction prompt.
                 </span>
             </span>
         </label>
@@ -135,57 +132,6 @@ $paperlessId = $value('paperless_field_id');
                 not is what stops a model finding one on every page.
             </p>
         </div>
-    </div>
-
-    <div class="card">
-        <h2>Where it goes in Paperless</h2>
-
-        <?php if ($paperlessError !== null): ?>
-            <p class="text-danger"><?= e($paperlessError) ?></p>
-            <p class="field-hint">
-                The field can be saved without a pairing and matched up later. Until it is paired it
-                is read off the page but not written back.
-            </p>
-        <?php endif; ?>
-
-        <div class="field">
-            <label class="label" for="paperless_field_id">Paperless field</label>
-            <select class="input" id="paperless_field_id" name="paperless_field_id">
-                <option value="">— not paired —</option>
-                <?php foreach ($paperlessFields as $pf): ?>
-                    <?php
-                    $pid   = (int) ($pf['id'] ?? 0);
-                    $taken = $alreadyPaired[$pid] ?? null;
-                    ?>
-                    <option value="<?= e((string) $pid) ?>"
-                        <?= $paperlessId === (string) $pid ? 'selected' : '' ?>
-                        <?= $taken !== null ? 'disabled' : '' ?>>
-                        <?= e((string) ($pf['name'] ?? '')) ?>
-                        (<?= e((string) ($pf['data_type'] ?? '')) ?>)
-                        <?= $taken === null ? '' : ' — already used by ' . e($taken) ?>
-                    </option>
-                <?php endforeach; ?>
-            </select>
-            <p class="field-hint">
-                A field already paired with another is offered but not selectable: the write-back
-                merges by Paperless field id, so two InvoGrid fields pointing at one Paperless field
-                would overwrite each other on every document.
-            </p>
-        </div>
-
-        <?php if ($paperlessError === null): ?>
-            <label class="checkbox">
-                <input type="checkbox" name="create_in_paperless" value="1">
-                <span>
-                    Create it in Paperless instead
-                    <span class="field-hint">
-                        Makes a new Paperless custom field from the label and type above and pairs
-                        this one to it, so setting up a field does not mean opening Paperless in
-                        another tab. Done first — if Paperless refuses, nothing is saved here either.
-                    </span>
-                </span>
-            </label>
-        <?php endif; ?>
     </div>
 
     <div class="form-actions">

@@ -58,7 +58,7 @@ final class ExtractStage
         }
 
         $client    = LlmFactory::forStage('extraction');
-        $variables = $this->variables($ocrText);
+        $variables = $this->variables($ocrText, OcrResult::annotations($ocr));
         $notes     = $this->listWarnings();
 
         DocumentEvent::record($id, 'extract', DocumentEvent::STARTED, sprintf(
@@ -72,7 +72,7 @@ final class ExtractStage
         // in parallel, but PHP without an event loop would mean forking or curl
         // multi-handles, and the whole stage is a handful of seconds against a
         // queue that runs every minute. Not worth the machinery.
-        $header   = $this->call($client, 'extract_header', $variables, ['paperlessTitle', 'dateInvoice', 'dateDue']);
+        $header   = $this->call($client, 'extract_header', $variables, ['documentTitle', 'dateInvoice', 'dateDue']);
         $supplier = $this->call($client, 'extract_supplier', $variables, ['supplierMatched']);
         $lines    = $this->call($client, 'extract_lines', $variables, ['documentType', 'lineItems']);
 
@@ -122,7 +122,7 @@ final class ExtractStage
             // about to agree or overturn.
             'doc_type_reason'     => $this->str($lines['documentTypeReason'] ?? null, 500),
 
-            'paperless_title'     => $this->str($header['paperlessTitle'] ?? null, 255),
+            'document_title'     => $this->str($header['documentTitle'] ?? null, 255),
             'cb_summary'          => $this->str($header['cbSummary'] ?? null, 255),
             'invoice_number'      => $this->str($header['reference'] ?? null, 100),
             'invoice_date'        => $this->date($header['dateInvoice'] ?? null),
@@ -172,9 +172,10 @@ final class ExtractStage
      * ignores the rest, which means somebody editing one can add
      * `{{ accountCodes }}` to the header prompt without a code change.
      *
+     * @param array<int,array<string,mixed>> $annotations
      * @return array<string,string>
      */
-    private function variables(string $ocrText): array
+    private function variables(string $ocrText, array $annotations): array
     {
         return [
             'ocrText'       => $ocrText,
@@ -184,7 +185,36 @@ final class ExtractStage
             'vatRates'      => PromptRenderer::encodeList(ClearbooksCache::forPrompt(ClearbooksCache::VAT_RATE)),
             'vatTreatments' => PromptRenderer::encodeList(ClearbooksCache::forPrompt(ClearbooksCache::VAT_TREATMENT)),
             'customFields'  => PromptRenderer::encodeList(CustomField::forPrompt()),
+            'annotations'   => $this->encodeAnnotations($annotations),
         ];
+    }
+
+    /**
+     * The handwritten marks, as the objects they were read as.
+     *
+     * This is what the `### Notes` section used to be for. That section was
+     * the n8n flow flattening the annotations into prose and appending them to
+     * the transcription, because it had nowhere else to put them; the prompts
+     * that wanted them then read them back out of the text, and the prompts
+     * that did not had to be told to skip past. The list goes to the one prompt
+     * that asks for it and nowhere near the transcription.
+     *
+     * `encodeList()` is not used because its empty message is about the Clear
+     * Books cache, and "nothing has been cached" is a setup problem — whereas a
+     * page with no handwriting on it is the ordinary case.
+     *
+     * @param array<int,array<string,mixed>> $annotations
+     */
+    private function encodeAnnotations(array $annotations): string
+    {
+        if ($annotations === []) {
+            return '[]  // nothing handwritten was found on this document';
+        }
+
+        return json_encode(
+            $annotations,
+            JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE | JSON_THROW_ON_ERROR
+        );
     }
 
     /**
@@ -303,13 +333,19 @@ final class ExtractStage
      * 1. The OCR call already reported the annotation fields it was asked for.
      *    Where a custom field lines up with one of those, the answer is already
      *    in hand and costs nothing.
-     * 2. Failing that, the `### Notes` section at the end of the transcription
-     *    states them in a fixed form, so a read of that text settles most of
-     *    the rest.
-     * 3. Only what is still unresolved goes to a model, and only then.
+     * 2. Only what is still unresolved goes to a model, and only then — with
+     *    the handwritten annotations alongside, since a field the fast path
+     *    could not answer is usually one written on the page by hand.
      *
-     * On the ordinary document steps 1 and 2 answer everything and there is no
-     * fourth call at all.
+     * There was a step between these two: a read of the `### Notes` section for
+     * the same fields stated by label. It went with the section. It never
+     * answered anything step 1 had not, because the only fields the notes could
+     * state were the two the OCR prompt reports anyway — it was a second, worse
+     * copy of the same answer, and the transcription is the wrong place to have
+     * been recovering data from.
+     *
+     * On the ordinary document step 1 answers everything and there is no fourth
+     * call at all.
      *
      * @param array<string,string> $variables
      * @param array<string,mixed>  $ocr
@@ -324,7 +360,6 @@ final class ExtractStage
         }
 
         $structured = OcrResult::structured($ocr) ?? [];
-        $notesBlock = $this->notesSection(OcrResult::text($ocr));
 
         $values     = [];
         $unresolved = [];
@@ -345,11 +380,6 @@ final class ExtractStage
                 }
             }
 
-            // 2. The ### Notes section, which states them by label.
-            if ($value === null && $notesBlock !== '') {
-                $value = CustomField::coerce($type, $this->fromNotes($notesBlock, (string) $field['label']));
-            }
-
             if ($value === null) {
                 $unresolved[] = $field;
             }
@@ -361,7 +391,7 @@ final class ExtractStage
             return ['values' => $values, 'reviewNotes' => []];
         }
 
-        // 3. Ask, but only about what is left.
+        // 2. Ask, but only about what is left.
         $variables['customFields'] = PromptRenderer::encodeList(array_map(
             static function (array $field): array {
                 $entry = [
@@ -396,38 +426,6 @@ final class ExtractStage
         }
 
         return ['values' => $values, 'reviewNotes' => $notes];
-    }
-
-    /** The `### Notes` block at the end of a transcription, or ''. */
-    private function notesSection(string $ocrText): string
-    {
-        $at = strrpos($ocrText, '### Notes');
-
-        return $at === false ? '' : substr($ocrText, $at);
-    }
-
-    /**
-     * A labelled value out of the notes block.
-     *
-     * The section states them as `Clearbooks Number: 80421`, with "Not found"
-     * where there is none — which has to read as absent rather than as the
-     * literal string.
-     */
-    private function fromNotes(string $notes, string $label): ?string
-    {
-        $pattern = '/^\s*(?:[-*]\s*)?(?:\*\*)?' . preg_quote($label, '/') . '(?:\*\*)?\s*:\s*(.+)$/mi';
-
-        if (preg_match($pattern, $notes, $matches) !== 1) {
-            return null;
-        }
-
-        $value = trim($matches[1], " \t\r\n*_`");
-
-        if ($value === '' || strcasecmp($value, 'not found') === 0 || strcasecmp($value, 'none') === 0) {
-            return null;
-        }
-
-        return $value;
     }
 
     /**

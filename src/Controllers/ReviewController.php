@@ -17,8 +17,10 @@ use App\Models\DocumentType;
 use App\Models\EntityMatch;
 use App\Models\Extraction;
 use App\Models\OcrResult;
+use App\Models\DocumentPage;
 use App\Models\Submission;
 use App\Services\EntityCreator;
+use App\Services\FieldIssues;
 use App\Services\IngestStage;
 use App\Services\SubmitStage;
 use Throwable;
@@ -69,6 +71,10 @@ final class ReviewController extends Controller
 
         $this->view('review/index', [
             'pageTitle' => 'Review queue',
+
+            // A queue is a table read on a monitor, not a column of prose:
+            // see the layout for what `wide` does to the content column.
+            'wide'      => true,
             'rows'      => Document::queue($status, self::PER_PAGE, ($page - 1) * self::PER_PAGE),
             'filter'    => $filter,
             'total'     => $total,
@@ -90,20 +96,44 @@ final class ReviewController extends Controller
             ? null
             : IngestStage::absolutePath((string) $document['pdf_path']);
 
-        $matches = EntityMatch::forExtraction((int) $extraction['id']);
+        $matches      = EntityMatch::forExtraction((int) $extraction['id']);
+        $customFields = CustomField::extracted();
 
         $this->view('review/show', [
-            'pageTitle'     => 'Review #' . $document['paperless_doc_id'],
+            'pageTitle'     => 'Review #' . (int) $document['id'],
+            'wide'          => true,
             'document'      => $document,
             'extraction'    => $extraction,
             'matches'       => $matches,
             'unresolved'    => EntityMatch::unresolved((int) $extraction['id']),
             'notes'         => Extraction::reviewNotes($extraction),
+
+            /*
+             * Which field is each of those notes actually about?
+             *
+             * The screen used to answer that with one card at the top saying
+             * "4 things to check" above forty inputs, leaving the reviewer to
+             * work out which four boxes were meant — the part of the job the
+             * machine can do. `FieldIssues` pins each note, each unresolved
+             * match and each uncertain reading to the input it belongs to, and
+             * hands back the handful that name no field rather than guessing.
+             */
+            'issues'        => FieldIssues::build($extraction, $matches, $customFields),
+
+            /*
+             * The rendered pages: what the scan pane shows by default.
+             *
+             * They are already on disk — every document is rendered to one
+             * image per page before a model is shown it — and they are the very
+             * images the extraction was worked out from. The PDF is a button
+             * underneath them rather than the thing embedded.
+             */
+            'pages'         => DocumentPage::forDocument((int) $document['id']),
             'lines'         => array_values(Extraction::decode($extraction, 'line_items')),
             'supplierMatch' => Extraction::decode($extraction, 'supplier_match'),
             'treatment'     => Extraction::decode($extraction, 'vat_treatment'),
             'customValues'  => Extraction::decode($extraction, 'custom_field_values'),
-            'customFields'  => CustomField::extracted(),
+            'customFields'  => $customFields,
             'docTypes'      => DocumentType::all(),
 
             // The credit-note / refund decision: which types are on offer,
@@ -113,9 +143,9 @@ final class ReviewController extends Controller
                 && !Extraction::typeConfirmed($extraction),
             'confirmable'    => DocumentType::all(),
             'supplierRoute'  => ClearbooksCache::defaultCreditRoute(
-                $document['correspondent_matched_supplier_id'] === null
+                $document['matched_supplier_id'] === null
                     ? null
-                    : (string) $document['correspondent_matched_supplier_id']
+                    : (string) $document['matched_supplier_id']
             ),
             'suppliers'     => ClearbooksCache::all(ClearbooksCache::SUPPLIER),
             'accountCodes'  => ClearbooksCache::all(ClearbooksCache::ACCOUNT_CODE),
@@ -194,12 +224,9 @@ final class ReviewController extends Controller
         }
 
         Flash::success(sprintf(
-            'Created "%s" in Clear Books (id %s)%s. %s',
+            'Created "%s" in Clear Books (id %s). %s',
             $result['name'],
             $result['cbId'],
-            $result['correspondentId'] === null
-                ? ', but its Paperless correspondent could not be created — the nightly sync will pick it up'
-                : ' and its Paperless correspondent',
             $result['status'] === Document::READY_TO_SUBMIT
                 ? 'This document is now ready to submit.'
                 : 'Something else on this document still needs resolving.'
@@ -336,7 +363,7 @@ final class ReviewController extends Controller
     }
 
     /**
-     * Submit to Clear Books and write the result back to Paperless.
+     * Submit to Clear Books.
      *
      * Guarded three ways, because a bill submitted twice is a real problem in
      * somebody's accounts: the status must be `ready_to_submit`, every entity
@@ -410,7 +437,7 @@ final class ReviewController extends Controller
     {
         $fields = [
             'doc_type'          => $this->docType(Request::post('doc_type', '')),
-            'paperless_title'   => $this->text(Request::post('paperless_title'), 255),
+            'document_title'   => $this->text(Request::post('document_title'), 255),
             'cb_summary'        => $this->text(Request::post('cb_summary'), 255),
             'supplier_name_raw' => $this->text(Request::post('supplier_name_raw'), 255),
             'invoice_number'    => $this->text(Request::post('invoice_number'), 100),

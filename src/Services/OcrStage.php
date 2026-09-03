@@ -22,6 +22,12 @@ use RuntimeException;
  * them would mean a status for "rendered but not read" that nothing would ever
  * usefully sit in. The rendering is recorded as its own event so a slow render
  * and a slow model call can still be told apart.
+ *
+ * This is also where the two flows are *decided*, though not where they part:
+ * a page carrying a handwritten Clearbooks Number is a scan of an invoice
+ * already in Clear Books, and `route()` writes that on the document. Both flows
+ * then run the identical pipeline and diverge at the end of matching. See
+ * `route()`.
  */
 final class OcrStage
 {
@@ -77,7 +83,7 @@ final class OcrStage
         // Parsed once, here. Everything downstream reads the stored columns.
         $structured = $response->json();
 
-        OcrResult::create($id, [
+        $resultId = OcrResult::create($id, [
             'llm_provider'       => $response->provider,
             'llm_model'          => $response->model,
             'raw_text'           => $response->text,
@@ -88,10 +94,81 @@ final class OcrStage
             'duration_ms'        => $response->durationMs,
         ]);
 
-        // The structured half is not consumed until the extraction stage, but a
-        // note now is what tells somebody watching the queue that there is
-        // handwriting on this one.
-        $this->recordAnnotationSummary($id, $structured);
+        // Read back rather than reported from `$structured`, so the note and the
+        // routing decision below both describe the values as they were stored —
+        // "#80421" written on the page and `80421` in the column must not turn
+        // into two different numbers in the same document's history.
+        $result = OcrResult::find($resultId) ?? [];
+
+        // The annotations themselves are not consumed until the extraction
+        // stage, but a note now is what tells somebody watching the queue that
+        // there is handwriting on this one.
+        $this->recordAnnotationSummary($id, $structured, $result);
+
+        return $this->route($id, $result);
+    }
+
+    /**
+     * Record which of the two flows this document is on.
+     *
+     * A handwritten Clearbooks Number is a reference to an invoice already in
+     * Clear Books, so the document is a scan belonging to a record that exists
+     * rather than a bill to post. This is the stage that reads that number, so
+     * this is where the answer is written down.
+     *
+     * **It writes `documents.route` and nothing else.** Every document goes on
+     * to `ocr_done` and through the same extraction and matching, whichever
+     * flow it is on — see `Document::ROUTE_NEW`. The route is read at the
+     * *exit* of the matching stage, which is where the two actually part
+     * company: one creates a record in Clear Books, the other matches an
+     * existing one.
+     *
+     * An earlier version of this branch returned `existing_invoice` here and
+     * skipped extraction, to save four model calls on a question the
+     * handwriting had already answered. It saved the calls and lost the
+     * document: no supplier, no dates, no line items, nothing to search on, and
+     * two pipelines to keep in step for ever after.
+     *
+     * @param array<string,mixed> $result The stored OCR result
+     * @return string The status the document moves to
+     */
+    private function route(int $documentId, array $result): string
+    {
+        $number = OcrResult::clearbooksNumber($result);
+
+        if (OcrResult::isUsableNumber($number)) {
+            Document::setRoute($documentId, Document::ROUTE_EXISTING);
+
+            DocumentEvent::record(
+                $documentId,
+                'route',
+                DocumentEvent::SUCCEEDED,
+                'Clearbooks Number ' . $number . ' is written on the page, so this is an existing invoice '
+                . 'rather than a new one. It will be read and extracted like any other document, and '
+                . 'matched against that Clear Books record instead of creating one.'
+            );
+
+            return Document::OCR_DONE;
+        }
+
+        Document::setRoute($documentId, Document::ROUTE_NEW);
+
+        // A number that came back but is not digits is a misread, and the
+        // prompt says why it matters: a code with letters in it is a Project,
+        // not a Clearbooks Number. Saying so beats routing on it, and beats
+        // dropping it silently — somebody looking at the page and at this
+        // document will want to know the two were not the same.
+        $message = $number === null
+            ? 'No Clearbooks Number on the page, so this is a new invoice. Sent to the New Invoice flow.'
+            : 'The Clearbooks Number came back as "' . $number . '", which is not digits only and so cannot '
+              . 'be a Clear Books reference. Treated as absent, and sent to the New Invoice flow.';
+
+        DocumentEvent::record(
+            $documentId,
+            'route',
+            $number === null ? DocumentEvent::SUCCEEDED : DocumentEvent::SKIPPED,
+            $message
+        );
 
         return Document::OCR_DONE;
     }
@@ -181,9 +258,10 @@ final class OcrStage
      * the stage. The extraction stage is where the structure is actually
      * depended upon.
      *
-     * @param array<string,mixed>|null $structured
+     * @param array<string,mixed>|null $structured What the model returned
+     * @param array<string,mixed>      $result     The row it was stored as
      */
-    private function recordAnnotationSummary(int $documentId, ?array $structured): void
+    private function recordAnnotationSummary(int $documentId, ?array $structured, array $result): void
     {
         if ($structured === null) {
             DocumentEvent::record(
@@ -197,25 +275,21 @@ final class OcrStage
             return;
         }
 
+        // The stored columns, not the response: `OcrResult` is where the two
+        // fields are named — `clearbooksNumber` with its lower-case b, and
+        // `project` rather than `projectCode` — and one place knowing that is
+        // the point of promoting them. Reading the wrong key here used to mean
+        // every document silently reported no annotations.
+        $clearBooks  = OcrResult::clearbooksNumber($result);
+        $project     = OcrResult::projectCode($result);
+        $annotations = OcrResult::annotations($result);
+
         $notes = [];
 
-        // `clearbooksNumber` and `project` — the names the production prompt
-        // uses. Note the lower-case b: it does not follow the "Clear Books" the
-        // rest of the application spells, and getting it wrong means both
-        // fields silently read as absent on every document.
-        $clearBooks = $structured['clearbooksNumber'] ?? null;
-        $project    = $structured['project'] ?? null;
+        $notes[] = $clearBooks === null ? 'no Clearbooks Number' : 'Clearbooks Number ' . $clearBooks;
+        $notes[] = $project === null ? 'no project' : 'project ' . $project;
 
-        $notes[] = is_scalar($clearBooks) && (string) $clearBooks !== ''
-            ? 'Clearbooks Number ' . $clearBooks
-            : 'no Clearbooks Number';
-
-        $notes[] = is_string($project) && $project !== ''
-            ? 'project ' . $project
-            : 'no project';
-
-        $annotations = $structured['handwrittenAnnotations'] ?? [];
-        if (is_array($annotations) && $annotations !== []) {
+        if ($annotations !== []) {
             $notes[] = count($annotations) . ' handwritten annotation(s)';
         }
 

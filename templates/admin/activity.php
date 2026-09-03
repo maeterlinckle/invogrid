@@ -31,19 +31,31 @@ $tone = static function (string $action): string {
         str_starts_with($action, 'users.')     => 'badge-warn',
         str_starts_with($action, 'settings.')  => 'badge-warn',
         $action === 'document.submitted'       => 'badge-ok',
+
+        // A link ends a document the same way a submission does: it is now in
+        // Clear Books.
+        $action === 'document.linked'          => 'badge-ok',
+
+        // The only line in this log describing something that no longer
+        // exists. It reads as the exception it is.
+        $action === 'document.deleted'         => 'badge-danger',
         $action === 'clearbooks.connected'     => 'badge-ok',
         default                                => 'badge-accent',
     };
 };
 
 /**
- * The names the two integrations actually go by.
+ * The one family whose name `ucfirst()` gets wrong.
  *
- * `ucfirst()` gets every other family right and these two wrong, and a log that
- * calls the accounts package "Clearbooks" looks like it is describing something
- * else.
+ * A log that calls the accounts package "Clearbooks" looks like it is
+ * describing something else. Everything else — `document`, `users`, `review` —
+ * comes out right on its own.
+ *
+ * Families no longer written still appear here, and should: `paperless.*` rows
+ * from before the pivot are history, and the log outliving what it describes is
+ * the point of it.
  */
-$families = ['clearbooks' => 'Clear Books', 'paperless' => 'Paperless'];
+$families = ['clearbooks' => 'Clear Books'];
 
 /** `clearbooks.supplier_created` reads as "Clear Books — supplier created". */
 $humanise = static function (string $action) use ($families): string {
@@ -87,9 +99,9 @@ foreach ($actions as $action) {
     <div class="field field-wide">
         <label class="label" for="q">Search</label>
         <input class="input" type="search" id="q" name="q" value="<?= e($filters['q']) ?>"
-               placeholder="A name, or words from the entry, or a Paperless id">
+               placeholder="A name, or words from the entry, or a document number">
         <p class="field-hint">
-            A number is read as a Paperless document id first, and then as text — so a reference
+            A number is read as a document number first, and then as text — so a reference
             that happens to be numeric is not lost.
         </p>
     </div>
@@ -192,9 +204,13 @@ foreach ($actions as $action) {
                         <?php if ($entry['document_id'] !== null): ?>
                             <span class="cell-sub">
                                 <a href="<?= e(url('/documents/' . (int) $entry['document_id'])) ?>">
-                                    <?= $entry['paperless_doc_id'] === null
-                                        ? 'the document'
-                                        : 'Paperless #' . e((string) (int) $entry['paperless_doc_id']) ?>
+                                    Document #<?= (int) $entry['document_id'] ?>
+                                    <?php /* The name it arrived under, when the document still
+                                             exists to have one. A left join, so this is null for a
+                                             log line that outlived its document. */ ?>
+                                    <?php if (($entry['original_filename'] ?? null) !== null): ?>
+                                        — <?= e((string) $entry['original_filename']) ?>
+                                    <?php endif; ?>
                                 </a>
                             </span>
                         <?php endif; ?>

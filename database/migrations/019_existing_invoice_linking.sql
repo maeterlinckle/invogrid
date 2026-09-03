@@ -1,0 +1,73 @@
+-- ---------------------------------------------------------------------------
+-- InvoGrid — the Existing Invoice route.
+--
+-- Prompt 17. Migration 018 built the branch and left one arm of it hanging: a
+-- document carrying a handwritten Clearbooks Number went to `existing_invoice`
+-- and waited there, because nothing consumed that status.
+--
+-- **The branch moves.** 018 forked at the transcription, so an existing-invoice
+-- document skipped extraction entirely — four model calls saved on a question
+-- the handwriting had already answered. That was the wrong trade, and this
+-- migration is where it is corrected:
+--
+--   * a scan of an existing invoice is still a document somebody will search
+--     for, report on and read next year. Skipping extraction left it with no
+--     supplier, no dates, no line items and no custom fields — a blank row in
+--     every list, and nothing for any future feature to work with;
+--   * two flows that diverge at stage two are two pipelines. Every later change
+--     to extraction or matching would have had to be made twice, or would
+--     silently have applied to half the documents;
+--   * the checksum this route turns on wants an invoice date and a gross total,
+--     and the extraction is what produces those properly.
+--
+-- So **both flows now run the identical pipeline** — ingest, ocr, extract,
+-- match — and fork only at the very end, where the New Invoice route creates a
+-- record in Clear Books and this one matches an existing record instead.
+-- `documents.route` is still decided at OCR from the Clearbooks Number; it is
+-- read at the *exit* of the matching stage rather than acted on at the entry to
+-- extraction.
+--
+-- **Nothing in Clear Books is written except the attachment.** The record was
+-- entered by a person and is not InvoGrid's to edit. Everything the extraction
+-- found is stored here, in the same columns a submitted document uses.
+--
+-- **`needs_link`.** The match has two outcomes and only one of them is
+-- finished. Where the Clearbooks Number finds exactly one synced record *and*
+-- that record's date and gross total agree with the extraction exactly, the
+-- document is linked and reaches `submitted`. Anything else waits for a person,
+-- and needs a status of its own to wait in:
+--
+--   * not `existing_invoice`, because that status is what the linking stage
+--     *consumes*. A document left in it would be picked up on the next tick,
+--     fail the same way and queue itself for ever.
+--   * not `needs_review`, because that queue is about resolving entities before
+--     a record is created in somebody's accounts. Nothing is created here, and
+--     the question is a different one: which Clear Books record is this?
+--
+-- **No tolerances, deliberately.** The checksum is exact. A hit on the
+-- Clearbooks Number with a date or a total that does not agree is precisely the
+-- shape a misread digit takes, and only a full agreement passes without a
+-- person looking.
+--
+-- **`submitted` is reused rather than a `linked` status added.** §32 of
+-- PROJECT-STATE.md anticipated it: `documents.route` exists precisely because
+-- the existing-invoice flow "rejoins the ordinary statuses further down, since
+-- it ends in a Clear Books record like everything else". A second terminal
+-- status meaning the same thing would have to be added to the dashboard, the
+-- queue counts, the document list and the stuck check in order to say something
+-- `route` already says better.
+--
+-- No new table. The link is a `submissions` row: same purchase resource, same
+-- Clear Books id, same URL, which is what makes "Open in Clear Books" and the
+-- document list's join work for a linked document without a second code path.
+-- Its `response_json` carries `linked: true` and the checksum that allowed it,
+-- so a row that attached a PDF to an existing record is never mistaken for one
+-- that created a record.
+-- ---------------------------------------------------------------------------
+
+ALTER TABLE documents
+    MODIFY COLUMN status ENUM('received', 'ocr_pending', 'ocr_done', 'extracting',
+                              'extracted', 'matching', 'needs_review', 'ready_to_submit',
+                              'existing_invoice', 'needs_link', 'submitted', 'failed',
+                              'ignored')
+           NOT NULL DEFAULT 'received';

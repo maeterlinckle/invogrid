@@ -32,7 +32,7 @@ final class Extraction
             'doc_type'            => $fields['doc_type'] ?? null,
             'doc_type_reason'     => $fields['doc_type_reason'] ?? null,
 
-            'paperless_title'     => $fields['paperless_title'] ?? null,
+            'document_title'     => $fields['document_title'] ?? null,
             'cb_summary'          => $fields['cb_summary'] ?? null,
             'supplier_name_raw'   => $fields['supplier_name_raw'] ?? null,
             'invoice_number'      => $fields['invoice_number'] ?? null,
@@ -126,7 +126,7 @@ final class Extraction
     public static function updateFields(int $id, array $fields, ?int $userId = null): array
     {
         $scalar = [
-            'doc_type', 'paperless_title', 'cb_summary', 'supplier_name_raw',
+            'doc_type', 'document_title', 'cb_summary', 'supplier_name_raw',
             'invoice_number', 'invoice_date', 'due_date', 'paid_date',
             'net_amount', 'vat_amount', 'gross_amount', 'currency',
         ];
@@ -208,8 +208,8 @@ final class Extraction
      * — once in the extraction stage, once in the review form, and not at all
      * on the path where a reviewer picks a VAT rate — and the gap in the third
      * was visible: a document resolved by picking a rate reached Clear Books
-     * with the totals it had *before* the rate was known, so the note written
-     * into Paperless said "£250.00 net" where it should have said "£300.00".
+     * with the totals it had *before* the rate was known, so the submitted bill
+     * said "£250.00 net" where it should have said "£300.00".
      *
      * Two rules, and they are the reason this cannot be a one-liner:
      *

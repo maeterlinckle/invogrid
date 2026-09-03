@@ -1,29 +1,40 @@
 <?php
 
-use App\Models\ClearbooksCache;
 use App\Models\Document;
 use App\Models\EntityMatch;
 use App\Models\Extraction;
+use App\Services\FieldIssues;
 
 /**
  * One document under review: the scan on the left, the record on the right.
  *
- * The PDF is served by an ordinary authenticated route on this same origin
- * (`/documents/{id}/pdf`), so the browser's own viewer renders it in an
- * `<object>` and that is the whole of it. The arrangement this replaces had the
- * file on a different domain and had to ship it base64-encoded inside a JSON
- * response to get around that; nothing here needs to, because InvoGrid stores
- * the file itself.
+ * **The scan pane shows the rendered page images, not the PDF.** They are
+ * already on disk — every document is rendered to one image per page before a
+ * model is shown it — and they are the very images the extraction was worked
+ * out from, so if the reading is wrong this is what it was wrong about. The
+ * PDF is a button underneath, and opens beneath the images rather than instead
+ * of them. See `templates/partials/scan.php`.
  *
  * **Every extracted value on this page is an input.** A reviewer who can see
  * that a date is wrong but can only accept or reject the document is worse off
  * than one with no machine at all.
+ *
+ * **Every problem is drawn on the field it belongs to.** What used to be one
+ * card at the top saying "4 things to check", above forty inputs, is now a mark
+ * against the four inputs concerned: the label carries a word, the box carries
+ * a coloured edge, and the note itself sits under the box. `FieldIssues` does
+ * the attribution; the index at the top of the form is a list of links to what
+ * it found, not a substitute for it. The notes that name no field — a Clear
+ * Books list that has never been synced, say — are listed in that index, which
+ * is the only thing left in it.
  *
  * @var array<string,mixed>            $document
  * @var array<string,mixed>            $extraction
  * @var array<int,array<string,mixed>> $matches
  * @var array<int,array<string,mixed>> $unresolved
  * @var array<int,string>              $notes
+ * @var App\Services\FieldIssues       $issues
+ * @var array<int,array<string,mixed>> $pages
  * @var array<int,array<string,mixed>> $lines
  * @var array<string,mixed>            $supplierMatch
  * @var array<string,mixed>            $treatment
@@ -72,20 +83,94 @@ $options = static function (array $rows, mixed $selected, string $empty = '— n
 
     return $html;
 };
+
+/*
+ * The order the index lists flagged fields in, and what to call each one.
+ *
+ * The form's own order, so following the list top to bottom walks down the
+ * screen rather than jumping about it. Line items are appended afterwards
+ * because their labels are built per row.
+ */
+$fieldLabels = [
+    'document_title'    => 'Title',
+    'cb_summary'        => 'Clear Books description',
+    'doc_type'          => 'Type',
+    'invoice_number'    => 'Reference',
+    'supplier_name_raw' => 'Supplier',
+    'invoice_date'      => 'Invoice date',
+    'due_date'          => 'Due date',
+    'paid_date'         => 'Paid date',
+    'lines'             => 'Line items',
+    'vat_treatment'     => 'VAT treatment',
+    'net_amount'        => 'Net',
+    'vat_amount'        => 'VAT',
+    'gross_amount'      => 'Gross',
+    'currency'          => 'Currency',
+];
+
+foreach ($customFields as $field) {
+    $fieldLabels['custom_' . (string) $field['field_key']] = (string) $field['label'];
+}
+
+// Every cell of the line table that carries something, named the way a person
+// would say it: "Line 2 — account code".
+$lineColumns = [
+    'row'          => '',
+    'description'  => ' — description',
+    'quantity'     => ' — quantity',
+    'unit_price'   => ' — unit price',
+    'total'        => ' — net',
+    'account_code' => ' — account code',
+    'vat_rate'     => ' — VAT rate',
+];
+
+foreach (array_keys($lines) as $index) {
+    foreach ($lineColumns as $column => $suffix) {
+        $fieldLabels['line.' . $index . '.' . $column] = 'Line ' . ((int) $index + 1) . $suffix;
+    }
+}
+
+/** The supplier's own match row, which decides whether the field can be fixed by typing. */
+$supplierRow = null;
+
+foreach ($matches as $row) {
+    if ((string) $row['entity_type'] === EntityMatch::SUPPLIER) {
+        $supplierRow = $row;
+        break;
+    }
+}
+
+$supplierUnresolved = null;
+
+foreach ($unresolved as $row) {
+    if ((string) $row['entity_type'] === EntityMatch::SUPPLIER) {
+        $supplierUnresolved = $row;
+        break;
+    }
+}
 ?>
 
 <div class="page-head">
-    <h1>
-        <?= e($extraction['paperless_title'] ?? ('Document #' . $document['paperless_doc_id'])) ?>
-    </h1>
-    <p class="muted">
-        Paperless #<?= e((string) $document['paperless_doc_id']) ?>
-        · <span class="badge <?= $ready ? 'badge-ok' : 'badge-warn' ?>"><?= e(Document::label($status)) ?></span>
-        <?php if (Extraction::wasEdited($extraction)): ?>
-            · <span class="badge badge-info">edited by hand</span>
-        <?php endif; ?>
-        · <a href="<?= e(url('/documents/' . $documentId)) ?>">the full pipeline record</a>
-    </p>
+    <div>
+        <h1><?= e($extraction['document_title'] ?? ('Document #' . $documentId)) ?></h1>
+        <p class="muted">
+            Document #<?= $documentId ?>
+            · <span class="badge <?= $ready ? 'badge-ok' : 'badge-warn' ?>"><?= e(Document::label($status)) ?></span>
+            <?php if (Extraction::wasEdited($extraction)): ?>
+                · <span class="badge badge-info">edited by hand</span>
+            <?php endif; ?>
+            <?php if ($extraction['supplier_name_raw'] !== null): ?>
+                · <?= e((string) $extraction['supplier_name_raw']) ?>
+            <?php endif; ?>
+            <?php if ($extraction['gross_amount'] !== null): ?>
+                · <?= e(format_money($extraction['gross_amount'], $currency)) ?>
+            <?php endif; ?>
+        </p>
+    </div>
+    <div class="form-actions">
+        <a class="btn btn-ghost" href="<?= e(url('/review')) ?>">Back to the queue</a>
+        <a class="btn btn-ghost" href="<?= e(url('/documents/' . $documentId)) ?>">The full pipeline record</a>
+    </div>
 </div>
 
 <?php /* The submit control sits at the top, above the fold, because when a
@@ -112,7 +197,7 @@ $options = static function (array $rows, mixed $selected, string $empty = '— n
         <p>
             Everything on this document resolves against Clear Books and nothing is flagged.
             Submitting creates the <?= e(strtolower(\App\Models\DocumentType::label($extraction['doc_type'] ?? null))) ?>,
-            attaches this PDF to it, and updates the Paperless document to match.
+            and attaches this PDF to it.
         </p>
         <form method="post" action="<?= e(url('/review/' . $documentId . '/submit')) ?>"
               data-confirm="Submit this to Clear Books? It creates a real record in the accounts and cannot be undone from here.">
@@ -142,15 +227,18 @@ $options = static function (array $rows, mixed $selected, string $empty = '— n
      * step exists to prevent — and the two answers are opposite entries in
      * somebody's accounts. So the box starts empty and the reviewer chooses.
      * The guess is still shown, with its reasoning, right beside the choice.
+     *
+     * This stays a card of its own rather than becoming a mark on the Type
+     * field, because it is not a correction: it is a question with two answers
+     * that are opposite entries in the accounts, and it needs the room to say
+     * why. The Type field is flagged as well, and points here.
      */
     $preselected = $supplierRoute;
     $guess       = (string) ($extraction['doc_type'] ?? '');
     $reason      = $extraction['doc_type_reason'] ?? null;
     ?>
-    <h2 class="section-title">Which is this?</h2>
-
-    <div class="card card-warn">
-        <h3>A credit note and a refund are not the same thing</h3>
+    <div class="card card-warn" id="confirm-the-type">
+        <h2>A credit note and a refund are not the same thing</h2>
         <p>
             A <strong>credit note</strong> gives Junction an amount to set against an invoice —
             <em>no money has moved</em>. A <strong>purchase refund</strong> is money that has
@@ -229,65 +317,167 @@ $options = static function (array $rows, mixed $selected, string $empty = '— n
     </div>
 <?php endif; ?>
 
-<?php if ($unresolved !== []): ?>
-    <h2 class="section-title">Not resolved yet</h2>
+<div class="doc-split doc-split-review">
+    <div class="doc-pane doc-pane-scan">
+        <?= partial('partials/scan', [
+            'documentId' => $documentId,
+            'pages'      => $pages,
+            'hasPdf'     => $hasPdf,
+            'missing'    => 'Neither the PDF nor any rendered page is on disk. Retry this document'
+                . ' from its pipeline record to fetch and render it again.',
+        ]) ?>
 
-    <p class="muted">
-        Each of these has to point at something real in Clear Books before the document can be
-        submitted. <strong>Nothing here is created automatically</strong> — every button below
-        opens a form you confirm first.
-    </p>
+        <?php if ($ocr !== null): ?>
+            <?php /* Folded away. It is InvoGrid's own transcription and it is
+                     several screens of monospace; the scan beside the form is
+                     what the job is actually done against, and a reviewer who
+                     wants the text wants it deliberately. */ ?>
+            <details class="ocr-panel">
+                <summary>What was read off the page</summary>
+                <p class="field-hint">
+                    InvoGrid's own transcription, annotations included. This is what the extraction
+                    was worked out from.
+                </p>
+                <div class="ocr-text"><?= e(\App\Models\OcrResult::text($ocr)) ?></div>
+            </details>
+        <?php endif; ?>
+    </div>
 
-    <?php foreach ($unresolved as $row): ?>
+    <div class="doc-pane">
         <?php
-        $matchId  = (int) $row['id'];
-        $type     = (string) $row['entity_type'];
-        $lineWord = $row['line_index'] === null ? '' : ' on line ' . ((int) $row['line_index'] + 1);
+        /*
+         * The index: one chip per flagged field, in the order they appear in
+         * the form below. Not a replacement for the marks on the fields — it
+         * is a list of links to them, so "what needs a look" is answered
+         * without scrolling and every answer is one click from the box.
+         */
+        $flagged = [];
+        $worst   = null;
 
-        $choices = match ($type) {
-            EntityMatch::SUPPLIER      => $suppliers,
-            EntityMatch::ACCOUNT_CODE  => $accountCodes,
-            EntityMatch::VAT_RATE      => $vatRates,
-            EntityMatch::VAT_TREATMENT => $vatTreatments,
-            default                    => [],
-        };
+        foreach ($fieldLabels as $key => $label) {
+            $tone = $issues->tone($key);
+
+            if ($tone !== null) {
+                $flagged[$key] = ['label' => $label, 'tone' => $tone];
+
+                if ($tone === FieldIssues::DANGER) {
+                    $worst = $tone;
+                }
+            }
+        }
+
+        $clear = $flagged === [] && $issues->unplaced() === [];
         ?>
-        <div class="card card-warn">
-            <h3><?= e(EntityMatch::label($type) . $lineWord) ?></h3>
-            <p>
-                Read off the document as <strong><?= e((string) $row['raw_value']) ?></strong>.
-                <?php if ($row['note'] !== null): ?>
-                    <span class="muted"><?= e((string) $row['note']) ?></span>
+
+        <div class="issue-index<?= $clear ? ' is-clear' : flag_class($worst ?? FieldIssues::WARN) ?>">
+            <?php if ($clear): ?>
+                <h3>Nothing is flagged</h3>
+                <p class="muted">
+                    Every value below was read confidently and everything on the document resolves
+                    against Clear Books. Read it against the scan anyway — that is the job — but
+                    nothing here is asking for a decision.
+                </p>
+            <?php else: ?>
+                <?php if ($flagged !== []): ?>
+                    <h3><?= count($flagged) ?> field<?= count($flagged) === 1 ? '' : 's' ?> to look at</h3>
+                    <p class="muted">
+                        Each is marked on the field itself below. Red must be resolved before this can
+                        be submitted; amber is a judgement the pipeline made but was not certain of, and
+                        is frequently right.
+                    </p>
+
+                    <ul class="issue-jumps">
+                        <?php foreach ($flagged as $key => $flag): ?>
+                            <li>
+                                <?php /* A whole-line problem is drawn on that
+                                         line's description cell — it belongs to
+                                         no one column — so that is where the
+                                         link has to land. */ ?>
+                                <a class="issue-jump<?= flag_class($flag['tone']) ?>"
+                                   href="#field-<?= e(str_replace(['.row', '.'], ['.description', '-'], $key)) ?>">
+                                    <?= e($flag['label']) ?>
+                                </a>
+                            </li>
+                        <?php endforeach; ?>
+                    </ul>
                 <?php endif; ?>
-            </p>
 
-            <?php /* Picking something already on file is the common case and is
-                     therefore first: most unmatched suppliers are on file under
-                     a name the matching could not see. */ ?>
-            <form method="post" action="<?= e(url('/review/' . $documentId . '/entity/' . $matchId . '/pick')) ?>"
-                  class="inline-form">
-                <?= csrf_field() ?>
-                <div class="field">
-                    <label class="label" for="pick-<?= e((string) $matchId) ?>">Use one already on file</label>
-                    <div class="input-with-button">
-                        <select class="input" id="pick-<?= e((string) $matchId) ?>" name="remote_id" required
-                                <?= can('review.resolve') ? '' : 'disabled' ?>>
-                            <?= $options($choices, null, '— choose —') ?>
-                        </select>
-                        <button type="submit" class="btn" <?= can('review.resolve') ? '' : 'disabled' ?>>Use this</button>
-                    </div>
-                    <?php if ($choices === []): ?>
-                        <p class="field-hint text-danger">
-                            Nothing of this kind is cached from Clear Books yet. Refresh the lists from
-                            <a href="<?= e(url('/admin/clearbooks')) ?>">Settings → Clear Books</a> first.
-                        </p>
+                <?php if ($issues->unplaced() !== []): ?>
+                    <?php /* The only things left in this panel: notes that name
+                             no field, so there is nowhere else honest to put
+                             them. Attributing them to a field by guesswork
+                             would have somebody correcting a value that was
+                             never wrong. */ ?>
+                    <?php if ($flagged === []): ?>
+                        <h3>Nothing is flagged on a particular field</h3>
                     <?php endif; ?>
-                </div>
-            </form>
+                    <p class="field-hint">
+                        <?= count($issues->unplaced()) === 1 ? 'One thing' : count($issues->unplaced()) . ' things' ?>
+                        raised that name no particular field:
+                    </p>
+                    <ul class="plain-list review-notes">
+                        <?php foreach ($issues->unplaced() as $issue): ?>
+                            <li><?= e($issue['text']) ?></li>
+                        <?php endforeach; ?>
+                    </ul>
+                <?php endif; ?>
+            <?php endif; ?>
+        </div>
 
-            <?php if ($type === EntityMatch::SUPPLIER): ?>
+        <?php if ($supplierUnresolved !== null): ?>
+            <?php
+            /*
+             * The supplier is the one entity the form cannot fix by itself.
+             *
+             * An account code or a VAT rate is a `<select>` in the form below,
+             * and saving it re-runs the match — so picking the right one *is*
+             * the resolution and no second control is needed. The supplier box
+             * is a free-text label read off the letterhead; typing in it
+             * changes what the document says, not what it points at. So the
+             * two things that do point it somewhere live here, next to the
+             * field, and the field's own mark links to them.
+             */
+            $matchId = (int) $supplierUnresolved['id'];
+            ?>
+            <div class="card card-warn" id="resolve-supplier">
+                <h3>The supplier does not resolve yet</h3>
+                <p>
+                    Read off the document as <strong><?= e((string) $supplierUnresolved['raw_value']) ?></strong>.
+                    <?php if ($supplierUnresolved['note'] !== null): ?>
+                        <span class="muted"><?= e((string) $supplierUnresolved['note']) ?></span>
+                    <?php endif; ?>
+                </p>
+                <p class="muted">
+                    It has to point at a real Clear Books supplier before this document can be
+                    submitted. <strong>Nothing here is created automatically</strong> — the second
+                    option opens a form you confirm first.
+                </p>
+
+                <?php /* Picking something already on file is the common case and is
+                         therefore first: most unmatched suppliers are on file under
+                         a name the matching could not see. */ ?>
+                <form method="post" action="<?= e(url('/review/' . $documentId . '/entity/' . $matchId . '/pick')) ?>">
+                    <?= csrf_field() ?>
+                    <div class="field">
+                        <label class="label" for="pick-supplier">Use one already on file</label>
+                        <div class="input-with-button">
+                            <select class="input" id="pick-supplier" name="remote_id" required
+                                    <?= can('review.resolve') ? '' : 'disabled' ?>>
+                                <?= $options($suppliers, null, '— choose —') ?>
+                            </select>
+                            <button type="submit" class="btn" <?= can('review.resolve') ? '' : 'disabled' ?>>Use this</button>
+                        </div>
+                        <?php if ($suppliers === []): ?>
+                            <p class="field-hint text-danger">
+                                No suppliers are cached from Clear Books yet. Refresh the lists from
+                                <a href="<?= e(url('/admin/clearbooks')) ?>">Settings → Clear Books</a> first.
+                            </p>
+                        <?php endif; ?>
+                    </div>
+                </form>
+
                 <details class="fieldset">
-                    <summary class="btn btn-warning btn-inline">Create in Clear Books instead</summary>
+                    <summary class="btn btn-warning btn-inline">Create it in Clear Books instead</summary>
 
                     <p class="field-hint">
                         Pre-filled from what was read off the document. Check it before confirming —
@@ -375,71 +565,10 @@ $options = static function (array $rows, mixed $selected, string $empty = '— n
                         </div>
                     </form>
                 </details>
-            <?php elseif ($type === EntityMatch::VAT_RATE || $type === EntityMatch::VAT_TREATMENT): ?>
-                <p class="field-hint">
-                    VAT rates and treatments are defined by Clear Books and cannot be created through
-                    its API — there is no endpoint for either. Pick the right one above, or add it in
-                    Clear Books and refresh the cached lists.
-                </p>
-            <?php else: ?>
-                <p class="field-hint">
-                    A nominal code is part of the chart of accounts rather than a property of this
-                    invoice, so it is not created from here. Add it in Clear Books, refresh the
-                    cached lists, then pick it above.
-                </p>
-            <?php endif; ?>
-        </div>
-    <?php endforeach; ?>
-<?php endif; ?>
-
-<?php if ($notes !== []): ?>
-    <div class="card card-warn">
-        <h3><?= count($notes) ?> thing<?= count($notes) === 1 ? '' : 's' ?> to check</h3>
-        <p class="muted">
-            Raised by the pipeline. Each is a judgement it made but was not fully confident in.
-            Correcting the field below clears the note on the next save; a note that is simply
-            right needs no action beyond a look.
-        </p>
-        <ul class="plain-list review-notes">
-            <?php foreach ($notes as $note): ?>
-                <li><?= e($note) ?></li>
-            <?php endforeach; ?>
-        </ul>
-    </div>
-<?php endif; ?>
-
-<h2 class="section-title">The document</h2>
-
-<div class="doc-split">
-    <div class="doc-pane">
-        <h3>The scan</h3>
-        <?php if ($hasPdf): ?>
-            <object class="pdf-frame" data="<?= e(url('/documents/' . $documentId . '/pdf')) ?>#view=FitH"
-                    type="application/pdf">
-                <p>
-                    Your browser will not display the PDF here.
-                    <a href="<?= e(url('/documents/' . $documentId . '/pdf')) ?>">Open it in a new tab</a>.
-                </p>
-            </object>
-        <?php else: ?>
-            <p class="empty">
-                The stored PDF is missing from disk. Retry the document from
-                <a href="<?= e(url('/documents/' . $documentId)) ?>">its pipeline record</a> to fetch it again.
-            </p>
+            </div>
         <?php endif; ?>
 
-        <?php if ($ocr !== null): ?>
-            <h3>What was read</h3>
-            <p class="field-hint">
-                InvoGrid's own transcription, annotations included. This is what the extraction was
-                worked out from, and what replaces Paperless's OCR text on submission.
-            </p>
-            <div class="ocr-text"><?= e(\App\Models\OcrResult::text($ocr)) ?></div>
-        <?php endif; ?>
-    </div>
-
-    <div class="doc-pane">
-        <form method="post" action="<?= e(url('/review/' . $documentId . '/save')) ?>" class="form">
+        <form method="post" action="<?= e(url('/review/' . $documentId . '/save')) ?>" class="form form-full">
             <?= csrf_field() ?>
 
             <?php /* A viewer may read every one of these and change none of them. One
@@ -462,22 +591,27 @@ $options = static function (array $rows, mixed $selected, string $empty = '— n
 
             <h3>What it says</h3>
 
-            <div class="field">
-                <label class="label" for="paperless_title">Title</label>
-                <input class="input" id="paperless_title" name="paperless_title" maxlength="255"
-                       value="<?= e((string) ($extraction['paperless_title'] ?? '')) ?>">
-                <p class="field-hint">What the Paperless document gets renamed to on submission.</p>
+            <?php $tone = $issues->tone('document_title'); ?>
+            <div class="field<?= flag_class($tone) ?>" id="field-document_title">
+                <label class="label flag-label" for="document_title">Title <?= flag_tag($tone) ?></label>
+                <input class="input" id="document_title" name="document_title" maxlength="255"
+                       value="<?= e((string) ($extraction['document_title'] ?? '')) ?>">
+                <?= flag_notes($issues->on('document_title')) ?>
+                <p class="field-hint">A short description of what was bought. Heads this screen and the printable summary.</p>
             </div>
 
-            <div class="field">
-                <label class="label" for="cb_summary">Clear Books description</label>
+            <?php $tone = $issues->tone('cb_summary'); ?>
+            <div class="field<?= flag_class($tone) ?>" id="field-cb_summary">
+                <label class="label flag-label" for="cb_summary">Clear Books description <?= flag_tag($tone) ?></label>
                 <input class="input" id="cb_summary" name="cb_summary" maxlength="255"
                        value="<?= e((string) ($extraction['cb_summary'] ?? '')) ?>">
+                <?= flag_notes($issues->on('cb_summary')) ?>
             </div>
 
             <div class="field-row">
-                <div class="field">
-                    <label class="label" for="doc_type">Type</label>
+                <?php $tone = $issues->tone('doc_type'); ?>
+                <div class="field<?= flag_class($tone) ?>" id="field-doc_type">
+                    <label class="label flag-label" for="doc_type">Type <?= flag_tag($tone) ?></label>
                     <select class="input" id="doc_type" name="doc_type">
                         <option value="">— not classified —</option>
                         <?php foreach ($docTypes as $type): ?>
@@ -487,34 +621,40 @@ $options = static function (array $rows, mixed $selected, string $empty = '— n
                             </option>
                         <?php endforeach; ?>
                     </select>
+                    <?= flag_notes($issues->on('doc_type')) ?>
+                    <?php if ($needsAgreement): ?>
+                        <p class="field-hint">
+                            <a href="#confirm-the-type">Somebody has to confirm which this is</a> before it can
+                            be submitted — saving a type here does not answer that question.
+                        </p>
+                    <?php endif; ?>
                 </div>
-                <div class="field">
-                    <label class="label" for="invoice_number">Reference</label>
+
+                <?php $tone = $issues->tone('invoice_number'); ?>
+                <div class="field<?= flag_class($tone) ?>" id="field-invoice_number">
+                    <label class="label flag-label" for="invoice_number">Reference <?= flag_tag($tone) ?></label>
                     <input class="input" id="invoice_number" name="invoice_number" maxlength="100"
                            value="<?= e((string) ($extraction['invoice_number'] ?? '')) ?>">
+                    <?= flag_notes($issues->on('invoice_number')) ?>
                     <p class="field-hint">The issuer's own invoice number.</p>
                 </div>
             </div>
 
-            <div class="field">
-                <label class="label" for="supplier_name_raw">Supplier</label>
+            <?php $tone = $issues->tone('supplier_name_raw'); ?>
+            <div class="field<?= flag_class($tone) ?>" id="field-supplier_name_raw">
+                <label class="label flag-label" for="supplier_name_raw">Supplier <?= flag_tag($tone) ?></label>
                 <input class="input" id="supplier_name_raw" name="supplier_name_raw" maxlength="255"
                        value="<?= e((string) ($extraction['supplier_name_raw'] ?? '')) ?>">
-                <?php
-                $supplierRow = null;
-                foreach ($matches as $row) {
-                    if ((string) $row['entity_type'] === EntityMatch::SUPPLIER) {
-                        $supplierRow = $row;
-                        break;
-                    }
-                }
-                ?>
+                <?= flag_notes($issues->on('supplier_name_raw')) ?>
                 <p class="field-hint">
                     <?php if ($supplierRow !== null && in_array((string) $supplierRow['status'], [EntityMatch::MATCHED, EntityMatch::CREATED], true)): ?>
                         <span class="badge badge-ok"><?= e((string) $supplierRow['status']) ?></span>
                         Clear Books <span class="mono"><?= e((string) $supplierRow['matched_id']) ?></span>
                         — <?= e((string) $supplierRow['matched_name']) ?>.
-                        Editing this box changes the label only; use the picker above to point it elsewhere.
+                        Editing this box changes the label only.
+                    <?php elseif ($supplierUnresolved !== null): ?>
+                        Typing here changes the label, not what it points at —
+                        <a href="#resolve-supplier">pick or create the Clear Books supplier above</a>.
                     <?php else: ?>
                         Not resolved to a Clear Books supplier yet.
                     <?php endif; ?>
@@ -524,42 +664,51 @@ $options = static function (array $rows, mixed $selected, string $empty = '— n
             <h3>Dates</h3>
 
             <div class="field-row">
-                <div class="field">
-                    <label class="label" for="invoice_date">Invoice date</label>
+                <?php $tone = $issues->tone('invoice_date'); ?>
+                <div class="field<?= flag_class($tone) ?>" id="field-invoice_date">
+                    <label class="label flag-label" for="invoice_date">Invoice date <?= flag_tag($tone) ?></label>
                     <input class="input" id="invoice_date" name="invoice_date" type="date"
                            value="<?= e((string) ($extraction['invoice_date'] ?? '')) ?>">
+                    <?= flag_notes($issues->on('invoice_date')) ?>
                 </div>
-                <div class="field">
-                    <label class="label" for="due_date">Due</label>
+                <?php $tone = $issues->tone('due_date'); ?>
+                <div class="field<?= flag_class($tone) ?>" id="field-due_date">
+                    <label class="label flag-label" for="due_date">Due <?= flag_tag($tone) ?></label>
                     <input class="input" id="due_date" name="due_date" type="date"
                            value="<?= e((string) ($extraction['due_date'] ?? '')) ?>">
+                    <?= flag_notes($issues->on('due_date')) ?>
                 </div>
-                <div class="field">
-                    <label class="label" for="paid_date">Paid</label>
+                <?php $tone = $issues->tone('paid_date'); ?>
+                <div class="field<?= flag_class($tone) ?>" id="field-paid_date">
+                    <label class="label flag-label" for="paid_date">Paid <?= flag_tag($tone) ?></label>
                     <input class="input" id="paid_date" name="paid_date" type="date"
                            value="<?= e((string) ($extraction['paid_date'] ?? '')) ?>">
+                    <?= flag_notes($issues->on('paid_date')) ?>
                 </div>
             </div>
 
-            <h3>Line items</h3>
+            <h3 id="field-lines">Line items <?= flag_tag($issues->tone('lines')) ?></h3>
+
+            <?= flag_notes($issues->on('lines')) ?>
 
             <p class="field-hint">
                 Clear the description and amounts of a row to drop it — a scan that read the
                 remittance slip as a line is the usual reason. The totals below recalculate from
-                these unless you type one in yourself.
+                these unless you type one in yourself. A marked cell is one the pipeline could not
+                settle; choosing the right value here and saving is what resolves it.
             </p>
 
             <div class="table-wrap">
-                <table class="table table-compact">
+                <table class="table table-compact table-lines">
                     <caption class="sr-only">Editable line items</caption>
                     <thead>
                         <tr>
-                            <th scope="col">Description</th>
-                            <th scope="col" class="amount">Qty</th>
-                            <th scope="col" class="amount">Unit</th>
-                            <th scope="col" class="amount">Net</th>
-                            <th scope="col">Account code</th>
-                            <th scope="col">VAT rate</th>
+                            <th scope="col" class="col-desc">Description</th>
+                            <th scope="col" class="amount col-qty">Qty</th>
+                            <th scope="col" class="amount col-money">Unit</th>
+                            <th scope="col" class="amount col-money">Net</th>
+                            <th scope="col" class="col-picker">Account code</th>
+                            <th scope="col" class="col-picker">VAT rate</th>
                         </tr>
                     </thead>
                     <tbody>
@@ -567,37 +716,54 @@ $options = static function (array $rows, mixed $selected, string $empty = '— n
                             <?php if (!is_array($line)) {
                                 continue;
                             } ?>
+                            <?php
+                            /*
+                             * A cell's mark is the row's mark as well: a note
+                             * about the line as a whole — a total that does not
+                             * follow from the quantity — has no one column, and
+                             * is drawn on the description so it is read first.
+                             */
+                            $cell = static fn (string $column): ?string => $issues->tone('line.' . $index . '.' . $column);
+                            $rowTone = $cell('row');
+                            ?>
                             <tr>
-                                <td>
+                                <td class="<?= trim('col-desc' . flag_class($cell('description') ?? $rowTone)) ?>"
+                                    id="field-line-<?= $index ?>-description">
                                     <textarea class="input" name="line_description[]" rows="2"
                                               aria-label="Line <?= e((string) ($index + 1)) ?> description"><?= e((string) ($line['description'] ?? '')) ?></textarea>
+                                    <?= flag_notes(array_merge($issues->onLine($index, 'description'), $issues->onLine($index, 'row'))) ?>
                                 </td>
-                                <td class="amount">
-                                    <input class="input" name="line_quantity[]" inputmode="decimal" size="5"
+                                <td class="amount<?= flag_class($cell('quantity')) ?>" id="field-line-<?= $index ?>-quantity">
+                                    <input class="input" name="line_quantity[]" inputmode="decimal"
                                            aria-label="Line <?= e((string) ($index + 1)) ?> quantity"
                                            value="<?= $line['quantity'] === null ? '' : e(rtrim(rtrim(number_format((float) $line['quantity'], 3, '.', ''), '0'), '.')) ?>">
+                                    <?= flag_notes($issues->onLine($index, 'quantity')) ?>
                                 </td>
-                                <td class="amount">
-                                    <input class="input" name="line_unit_price[]" inputmode="decimal" size="8"
+                                <td class="amount<?= flag_class($cell('unit_price')) ?>" id="field-line-<?= $index ?>-unit_price">
+                                    <input class="input" name="line_unit_price[]" inputmode="decimal"
                                            aria-label="Line <?= e((string) ($index + 1)) ?> unit price"
                                            value="<?= $line['unitPrice'] === null ? '' : e(number_format((float) $line['unitPrice'], 2, '.', '')) ?>">
+                                    <?= flag_notes($issues->onLine($index, 'unit_price')) ?>
                                 </td>
-                                <td class="amount">
-                                    <input class="input" name="line_total[]" inputmode="decimal" size="8"
+                                <td class="amount<?= flag_class($cell('total')) ?>" id="field-line-<?= $index ?>-total">
+                                    <input class="input" name="line_total[]" inputmode="decimal"
                                            aria-label="Line <?= e((string) ($index + 1)) ?> net"
                                            value="<?= $line['lineTotal'] === null ? '' : e(number_format((float) $line['lineTotal'], 2, '.', '')) ?>">
+                                    <?= flag_notes($issues->onLine($index, 'total')) ?>
                                 </td>
-                                <td>
+                                <td class="<?= trim(flag_class($cell('account_code'))) ?>" id="field-line-<?= $index ?>-account_code">
                                     <select class="input" name="line_account_code[]"
                                             aria-label="Line <?= e((string) ($index + 1)) ?> account code">
                                         <?= $options($accountCodes, $line['accountCode'] ?? null) ?>
                                     </select>
+                                    <?= flag_notes($issues->onLine($index, 'account_code')) ?>
                                 </td>
-                                <td>
+                                <td class="<?= trim(flag_class($cell('vat_rate'))) ?>" id="field-line-<?= $index ?>-vat_rate">
                                     <select class="input" name="line_vat_rate[]"
                                             aria-label="Line <?= e((string) ($index + 1)) ?> VAT rate">
                                         <?= $options($vatRates, $line['vatRateKey'] ?? null) ?>
                                     </select>
+                                    <?= flag_notes($issues->onLine($index, 'vat_rate')) ?>
                                 </td>
                             </tr>
                         <?php endforeach; ?>
@@ -605,13 +771,13 @@ $options = static function (array $rows, mixed $selected, string $empty = '— n
                         <?php /* One blank row, so adding a missed line does not need
                                  JavaScript or a second round trip. */ ?>
                         <tr>
-                            <td>
+                            <td class="col-desc">
                                 <textarea class="input" name="line_description[]" rows="2"
                                           placeholder="Add a line…" aria-label="New line description"></textarea>
                             </td>
-                            <td class="amount"><input class="input" name="line_quantity[]" inputmode="decimal" size="5" aria-label="New line quantity"></td>
-                            <td class="amount"><input class="input" name="line_unit_price[]" inputmode="decimal" size="8" aria-label="New line unit price"></td>
-                            <td class="amount"><input class="input" name="line_total[]" inputmode="decimal" size="8" aria-label="New line net"></td>
+                            <td class="amount"><input class="input" name="line_quantity[]" inputmode="decimal" aria-label="New line quantity"></td>
+                            <td class="amount"><input class="input" name="line_unit_price[]" inputmode="decimal" aria-label="New line unit price"></td>
+                            <td class="amount"><input class="input" name="line_total[]" inputmode="decimal" aria-label="New line net"></td>
                             <td><select class="input" name="line_account_code[]" aria-label="New line account code"><?= $options($accountCodes, null) ?></select></td>
                             <td><select class="input" name="line_vat_rate[]" aria-label="New line VAT rate"><?= $options($vatRates, null) ?></select></td>
                         </tr>
@@ -621,33 +787,43 @@ $options = static function (array $rows, mixed $selected, string $empty = '— n
 
             <h3>Totals</h3>
 
-            <div class="field">
-                <label class="label" for="vat_treatment">VAT treatment</label>
+            <?php $tone = $issues->tone('vat_treatment'); ?>
+            <div class="field<?= flag_class($tone) ?>" id="field-vat_treatment">
+                <label class="label flag-label" for="vat_treatment">VAT treatment <?= flag_tag($tone) ?></label>
                 <select class="input" id="vat_treatment" name="vat_treatment">
                     <?= $options($vatTreatments, $treatment['key'] ?? null) ?>
                 </select>
+                <?= flag_notes($issues->on('vat_treatment')) ?>
             </div>
 
             <div class="field-row">
-                <div class="field">
-                    <label class="label" for="net_amount">Net</label>
+                <?php $tone = $issues->tone('net_amount'); ?>
+                <div class="field<?= flag_class($tone) ?>" id="field-net_amount">
+                    <label class="label flag-label" for="net_amount">Net <?= flag_tag($tone) ?></label>
                     <input class="input" id="net_amount" name="net_amount" inputmode="decimal"
                            value="<?= $extraction['net_amount'] === null ? '' : e(number_format((float) $extraction['net_amount'], 2, '.', '')) ?>">
+                    <?= flag_notes($issues->on('net_amount')) ?>
                 </div>
-                <div class="field">
-                    <label class="label" for="vat_amount">VAT</label>
+                <?php $tone = $issues->tone('vat_amount'); ?>
+                <div class="field<?= flag_class($tone) ?>" id="field-vat_amount">
+                    <label class="label flag-label" for="vat_amount">VAT <?= flag_tag($tone) ?></label>
                     <input class="input" id="vat_amount" name="vat_amount" inputmode="decimal"
                            value="<?= $extraction['vat_amount'] === null ? '' : e(number_format((float) $extraction['vat_amount'], 2, '.', '')) ?>">
+                    <?= flag_notes($issues->on('vat_amount')) ?>
                 </div>
-                <div class="field">
-                    <label class="label" for="gross_amount">Gross</label>
+                <?php $tone = $issues->tone('gross_amount'); ?>
+                <div class="field<?= flag_class($tone) ?>" id="field-gross_amount">
+                    <label class="label flag-label" for="gross_amount">Gross <?= flag_tag($tone) ?></label>
                     <input class="input" id="gross_amount" name="gross_amount" inputmode="decimal"
                            value="<?= $extraction['gross_amount'] === null ? '' : e(number_format((float) $extraction['gross_amount'], 2, '.', '')) ?>">
+                    <?= flag_notes($issues->on('gross_amount')) ?>
                 </div>
-                <div class="field">
-                    <label class="label" for="currency">Currency</label>
-                    <input class="input" id="currency" name="currency" maxlength="3" size="4"
+                <?php $tone = $issues->tone('currency'); ?>
+                <div class="field<?= flag_class($tone) ?>" id="field-currency">
+                    <label class="label flag-label" for="currency">Currency <?= flag_tag($tone) ?></label>
+                    <input class="input" id="currency" name="currency" maxlength="3"
                            value="<?= e((string) ($currency ?? '')) ?>" placeholder="GBP">
+                    <?= flag_notes($issues->on('currency')) ?>
                 </div>
             </div>
 
@@ -655,22 +831,25 @@ $options = static function (array $rows, mixed $selected, string $empty = '— n
                 <h3>Custom fields</h3>
                 <p class="field-hint">Read off the page — usually handwritten. Blank is a normal answer.</p>
 
-                <?php foreach ($customFields as $field): ?>
-                    <?php
-                    $key   = (string) $field['field_key'];
-                    $value = $customValues[$key] ?? null;
-                    $type  = (string) $field['data_type'];
-                    ?>
-                    <div class="field">
-                        <label class="label" for="custom_<?= e($key) ?>"><?= e((string) $field['label']) ?></label>
-                        <input class="input" id="custom_<?= e($key) ?>" name="custom_<?= e($key) ?>"
-                               type="<?= $type === 'date' ? 'date' : 'text' ?>"
-                               value="<?= is_scalar($value) ? e((string) $value) : '' ?>">
-                        <?php if ($field['paperless_field_id'] === null): ?>
-                            <p class="field-hint">Not yet paired with a Paperless field, so it will not be written back.</p>
-                        <?php endif; ?>
-                    </div>
-                <?php endforeach; ?>
+                <div class="field-row">
+                    <?php foreach ($customFields as $field): ?>
+                        <?php
+                        $key   = (string) $field['field_key'];
+                        $value = $customValues[$key] ?? null;
+                        $type  = (string) $field['data_type'];
+                        $tone  = $issues->tone('custom_' . $key);
+                        ?>
+                        <div class="field<?= flag_class($tone) ?>" id="field-custom_<?= e($key) ?>">
+                            <label class="label flag-label" for="custom_<?= e($key) ?>">
+                                <?= e((string) $field['label']) ?> <?= flag_tag($tone) ?>
+                            </label>
+                            <input class="input" id="custom_<?= e($key) ?>" name="custom_<?= e($key) ?>"
+                                   type="<?= $type === 'date' ? 'date' : 'text' ?>"
+                                   value="<?= is_scalar($value) ? e((string) $value) : '' ?>">
+                            <?= flag_notes($issues->on('custom_' . $key)) ?>
+                        </div>
+                    <?php endforeach; ?>
+                </div>
             <?php endif; ?>
 
             </fieldset>
@@ -687,11 +866,11 @@ $options = static function (array $rows, mixed $selected, string $empty = '— n
 
 <h2 class="section-title">Not one of ours</h2>
 
-<div class="card">
+<div class="card form-narrow">
     <p>
         A duplicate, a statement rather than an invoice, a delivery note that came in on the same
-        scan run. Skipping takes it out of the queue for good — it stays in Paperless and can be put
-        back from its pipeline record.
+        scan run. Skipping takes it out of the queue for good — the document and its PDF are kept,
+        and it can be put back from its pipeline record.
     </p>
 
     <form method="post" action="<?= e(url('/review/' . $documentId . '/ignore')) ?>">
@@ -699,7 +878,7 @@ $options = static function (array $rows, mixed $selected, string $empty = '— n
         <div class="field">
             <label class="label" for="reason">Why</label>
             <input class="input" id="reason" name="reason" required minlength="3" maxlength="900"
-                   placeholder="e.g. duplicate of Paperless #412"
+                   placeholder="e.g. duplicate of #412"
                    <?= can('review.resolve') ? '' : 'disabled' ?>>
             <p class="field-hint">
                 Required, and kept in the activity log. Six months from now somebody will ask why

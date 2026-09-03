@@ -60,13 +60,17 @@ $tabs = [
         <table class="table">
             <caption class="sr-only">Documents waiting for a reviewer</caption>
             <thead>
+                <?php /* Stated widths rather than whatever the browser
+                         negotiates: left to itself the last column takes two
+                         thirds of a wide screen and the supplier — the thing
+                         being scanned for — wraps onto three lines. */ ?>
                 <tr>
-                    <th scope="col">Document</th>
-                    <th scope="col">Supplier</th>
-                    <th scope="col">Type</th>
-                    <th scope="col" class="amount">Amount</th>
-                    <th scope="col">Dated</th>
-                    <th scope="col">What is outstanding</th>
+                    <th scope="col" class="col-name">Document</th>
+                    <th scope="col" class="col-name">Supplier</th>
+                    <th scope="col" class="col-narrow">Type</th>
+                    <th scope="col" class="amount col-narrow">Amount</th>
+                    <th scope="col" class="col-date">Dated</th>
+                    <th scope="col" class="col-grow">What is outstanding</th>
                 </tr>
             </thead>
             <tbody>
@@ -83,10 +87,10 @@ $tabs = [
                     <tr>
                         <th scope="row">
                             <a href="<?= e(url('/review/' . $documentId)) ?>">
-                                <?= e($row['paperless_title'] ?? ('#' . $row['paperless_doc_id'])) ?>
+                                <?= e($row['document_title'] ?? ('#' . (int) $row['id'])) ?>
                             </a>
                             <span class="cell-sub">
-                                #<?= e((string) $row['paperless_doc_id']) ?>
+                                #<?= (int) $row['id'] ?>
                                 <?php if ($row['invoice_number'] !== null): ?>
                                     · <?= e((string) $row['invoice_number']) ?>
                                 <?php endif; ?>
@@ -95,7 +99,7 @@ $tabs = [
                                 <?php endif; ?>
                             </span>
                         </th>
-                        <td class="break"><?= e($row['correspondent_raw'] ?? '—') ?></td>
+                        <td class="break"><?= e($row['supplier_raw'] ?? '—') ?></td>
                         <td><?= e(DocumentType::label($row['doc_type'] ?? null)) ?></td>
                         <td class="amount nowrap">
                             <?= $row['gross_amount'] === null
@@ -103,7 +107,7 @@ $tabs = [
                                 : e(format_money($row['gross_amount'], $row['currency'])) ?>
                         </td>
                         <td class="nowrap"><?= e(format_date($row['invoice_date'])) ?></td>
-                        <td>
+                        <td class="col-grow">
                             <?php if ($ready && $unresolved === 0 && $noteCount === 0): ?>
                                 <span class="badge badge-ok">ready to submit</span>
                             <?php else: ?>
@@ -119,6 +123,18 @@ $tabs = [
                                 <?php endif; ?>
                                 <?php if ($unresolved === 0 && $noteCount === 0): ?>
                                     <span class="badge badge-muted"><?= e(Document::label((string) $row['status'])) ?></span>
+                                <?php endif; ?>
+
+                                <?php /* And what the first of them actually says.
+                                         A count answers "how much work is this";
+                                         the sentence answers "is it my work" —
+                                         a supplier nobody has created and a due
+                                         date read off a rubber stamp want
+                                         different people, and on a wide screen
+                                         there is room to say which. */ ?>
+                                <?php $first = Extraction::reviewNotes($row)[0] ?? null; ?>
+                                <?php if ($first !== null): ?>
+                                    <span class="cell-sub"><?= e(str_limit($first, 120)) ?></span>
                                 <?php endif; ?>
                             <?php endif; ?>
                         </td>

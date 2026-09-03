@@ -5,8 +5,10 @@ declare(strict_types=1);
 namespace App\Services;
 
 use App\Core\Auth;
+use App\Core\Database;
 use App\Models\AuditLog;
 use App\Models\ClearbooksCache;
+use App\Models\CustomField;
 use App\Models\Document;
 use App\Models\DocumentEvent;
 use App\Models\DocumentType;
@@ -18,7 +20,7 @@ use RuntimeException;
 use Throwable;
 
 /**
- * Send a resolved document to Clear Books, then make Paperless agree with it.
+ * Send a resolved document to Clear Books.
  *
  * The only irreversible thing InvoGrid does. Everything before it can be
  * re-run; this creates a record in somebody's accounts that has to be deleted
@@ -32,17 +34,17 @@ use Throwable;
  *  3. Create the record in Clear Books.
  *  4. Write the `submissions` row and move the document to `submitted`.
  *  5. Attach the PDF.
- *  6. Write back to Paperless.
+ *  6. Record what Clear Books called it.
  *
  * Four comes before five and six deliberately. A crash between three and four
  * would leave a bill in the accounts that InvoGrid thinks it never sent — and
  * the next person to press submit would create a second one. A crash after four
  * leaves a document that is correctly marked submitted with an attachment or a
- * Paperless update missing, which is visible, harmless and fixable. Of the two
+ * reference number missing, which is visible, harmless and fixable. Of the two
  * failure modes only one costs somebody a payment run.
  *
  * For the same reason five and six do not throw. The record exists; refusing to
- * record that because a tag could not be written would be choosing the worse
+ * record that because a follow-up step failed would be choosing the worse
  * failure on purpose.
  */
 final class SubmitStage
@@ -180,8 +182,7 @@ final class SubmitStage
             }
         }
 
-        $writeBack = PaperlessWriteBack::run($documentId, $extraction, $clearbooksId, $created);
-        $warnings  = array_merge($warnings, $writeBack);
+        self::recordProducedFields($extraction, $clearbooksId, $created);
 
         DocumentEvent::record($documentId, 'submit', DocumentEvent::SUCCEEDED, sprintf(
             'Created %s %s in Clear Books.%s',
@@ -195,7 +196,7 @@ final class SubmitStage
                 'Submitted. Clear Books %s %s created.%s',
                 $resource,
                 $clearbooksId,
-                $warnings === [] ? ' Paperless is up to date.' : ' ' . implode(' ', $warnings)
+                $warnings === [] ? '' : ' ' . implode(' ', $warnings)
             ),
             'submissionId' => $submissionId,
             'clearbooksId' => $clearbooksId,
@@ -261,7 +262,7 @@ final class SubmitStage
 
         foreach ([
             'reference'   => $extraction['invoice_number'] ?? null,
-            'description' => $extraction['cb_summary'] ?? $extraction['paperless_title'] ?? null,
+            'description' => $extraction['cb_summary'] ?? $extraction['document_title'] ?? null,
         ] as $field => $value) {
             if (is_string($value) && trim($value) !== '') {
                 $payload[$field] = trim($value);
@@ -359,6 +360,101 @@ final class SubmitStage
      * accounts having the evidence attached is worth a lot but not worth
      * pretending the submission failed.
      */
+    /**
+     * Fill in the custom fields that only exist once Clear Books has answered.
+     *
+     * A `submission`-source custom field is not read off the page — it is
+     * *produced* by submitting, which is why the extraction stage never asks
+     * about one. Until this prompt those two values had nowhere to live but
+     * Paperless, and the write-back put them there. Now they are written back
+     * onto the extraction itself, which is where every other field value
+     * already is, and so they appear on the document page and the printed
+     * summary without anybody opening another system.
+     *
+     * Best effort, like everything else past step four. The `submissions` row
+     * is the record of what happened; this is a convenience laid over it, and
+     * a failure here must not make a submitted document look unsubmitted.
+     *
+     * **Public because `LinkStage` calls it too.** A linked document reaches a
+     * Clear Books record just as a submitted one does; the only difference is
+     * that the record was already there. Both want the id and the document
+     * number in the same two custom fields, and a second implementation of
+     * "write down what Clear Books called it" would drift from this one.
+     *
+     * @param array<string,mixed> $extraction
+     * @param array<string,mixed> $created The Clear Books response, or the
+     *                                     matched record, whichever produced
+     *                                     the id
+     */
+    public static function recordProducedFields(
+        array $extraction,
+        string $clearbooksId,
+        array $created,
+    ): void {
+        $fields = CustomField::forSubmission();
+
+        if ($fields === []) {
+            return;
+        }
+
+        $number = $created['formattedDocumentNumber'] ?? $created['documentNumber'] ?? null;
+
+        $produced = [
+            'clearbooks_bill_id'         => $clearbooksId,
+            'clearbooks_document_number' => is_scalar($number)
+                ? mb_substr(trim((string) $number), 0, 64)
+                : null,
+        ];
+
+        $values  = Extraction::decode($extraction, 'custom_field_values');
+        $changed = false;
+
+        foreach ($fields as $field) {
+            $key   = (string) $field['field_key'];
+            $value = $produced[$key] ?? null;
+
+            /*
+             * A field whose key is not one this stage produces is skipped
+             * rather than nulled. Somebody can add a `submission` field on the
+             * custom-fields screen and nothing here knows how to fill it in —
+             * leaving it empty is honest; overwriting whatever is there with
+             * null would lose a value a reviewer had typed.
+             */
+            if ($value === null || $value === '') {
+                continue;
+            }
+
+            $values[$key] = CustomField::coerce((string) $field['data_type'], $value);
+            $changed      = true;
+        }
+
+        if (!$changed) {
+            return;
+        }
+
+        try {
+            /*
+             * Written straight to the column rather than through
+             * `Extraction::updateFields()`, which stamps `edited_at`. That
+             * stamp means "a person changed this", and the review screen says
+             * so; a value the submission produced by itself must not make an
+             * untouched extraction claim it was edited by hand.
+             */
+            Database::update('extractions', [
+                'custom_field_values' => json_encode(
+                    $values,
+                    JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE
+                ),
+            ], (int) $extraction['id']);
+        } catch (Throwable $e) {
+            AuditLog::record(
+                'submission.fields_not_recorded',
+                (int) $extraction['document_id'],
+                'Clear Books accepted the document, but its reference could not be stored: ' . $e->getMessage()
+            );
+        }
+    }
+
     private static function attach(
         ClearBooksClient $client,
         array $document,
@@ -375,9 +471,19 @@ final class SubmitStage
             return 'The stored PDF is missing from disk, so nothing was attached.';
         }
 
-        // Named for the Paperless document rather than the temporary path, so
-        // somebody looking at the attachment in Clear Books can find the scan.
-        $name = 'paperless-' . (int) $document['paperless_doc_id'] . '.pdf';
+        /*
+         * Named so somebody looking at the attachment in Clear Books can find
+         * it again in InvoGrid. The document number is the part that matters —
+         * it is what the printed summary shows — and the original filename
+         * follows it when there is one, because "invoice_4471.pdf" is often
+         * the only thing the person who uploaded it remembers.
+         */
+        $original = trim((string) ($document['original_filename'] ?? ''));
+        $stem     = $original === ''
+            ? ''
+            : '-' . preg_replace('/[^A-Za-z0-9._-]+/', '-', pathinfo($original, PATHINFO_FILENAME));
+
+        $name = 'invogrid-' . (int) $document['id'] . mb_substr($stem, 0, 60) . '.pdf';
 
         try {
             $client->attachToPurchase($resource, $clearbooksId, $name, $path);

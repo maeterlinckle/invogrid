@@ -4,7 +4,7 @@ use App\Models\Document;
 use App\Models\DocumentEvent;
 use App\Models\OcrResult;
 use App\Models\PipelineJob;
-use App\Models\Setting;
+use App\Services\Ingest\IngestSource;
 use App\Services\Pipeline;
 
 /**
@@ -24,7 +24,23 @@ use App\Services\Pipeline;
 $id      = (int) $document['id'];
 $status  = (string) $document['status'];
 $stage   = Pipeline::stageFor($status);
-$waiting = $stage === null && !in_array($status, [Document::SUBMITTED, Document::IGNORED, Document::FAILED], true);
+/*
+ * `$waiting` is "nothing runs this status, and nothing is meant to have
+ * finished either" — the card it draws says a stage has not been built yet.
+ *
+ * `needs_link` and `possible_duplicate` are excluded because that is not true
+ * of either: both are waiting on a person, and both have a screen for them.
+ * They get their own cards below, the same as `needs_review` documents are
+ * pointed at the review queue.
+ */
+$waiting = $stage === null && !in_array(
+    $status,
+    [
+        Document::SUBMITTED, Document::IGNORED, Document::FAILED,
+        Document::NEEDS_LINK, Document::POSSIBLE_DUPLICATE,
+    ],
+    true
+);
 
 $eventTone = static fn (string $s): string => match ($s) {
     DocumentEvent::FAILED    => 'badge-danger',
@@ -33,24 +49,34 @@ $eventTone = static fn (string $s): string => match ($s) {
     default                  => 'badge-accent',
 };
 
-$paperlessBase = rtrim((string) (Setting::get('paperless_base_url') ?? ''), '/');
+/*
+ * How this document arrived, in one line under the heading.
+ *
+ * Worth the space because it is the first question asked about a document that
+ * looks wrong — "where did this come from?" — and because with more than one
+ * ingest route the answer stops being obvious. The filename is the half a
+ * person actually recognises; the route is what tells them which system to go
+ * and look at.
+ */
+$arrival = IngestSource::label((string) ($document['ingest_source'] ?? ''));
+
+if (($document['original_filename'] ?? null) !== null) {
+    $arrival .= ' as ' . (string) $document['original_filename'];
+}
 ?>
 <div class="page-head">
     <div>
-        <h1>Paperless #<?= (int) $document['paperless_doc_id'] ?></h1>
+        <h1>Document #<?= $id ?></h1>
         <p class="muted">
-            <?= e($document['correspondent_raw'] ?? 'Supplier not yet known') ?>
-            · received <?= e(format_datetime((string) $document['created_at'])) ?>
+            <?= e($document['supplier_raw'] ?? 'Supplier not yet known') ?>
+            · <?= e($arrival) ?>
+            · <?= e(format_datetime((string) ($document['ingested_at'] ?? $document['created_at']))) ?>
         </p>
     </div>
     <div class="form-actions">
         <a class="btn btn-ghost" href="<?= e(url('/documents')) ?>">Back to documents</a>
         <?php if ($extraction !== null): ?>
             <a class="btn" href="<?= e(url('/documents/' . $id . '/print')) ?>">Printable summary</a>
-        <?php endif; ?>
-        <?php if ($paperlessBase !== ''): ?>
-            <a class="btn" href="<?= e($paperlessBase . '/documents/' . (int) $document['paperless_doc_id'] . '/') ?>"
-               target="_blank" rel="noopener noreferrer">Open in Paperless</a>
         <?php endif; ?>
     </div>
 </div>
@@ -115,6 +141,87 @@ $paperlessBase = rtrim((string) (Setting::get('paperless_base_url') ?? ''), '/')
         </p>
         <p class="muted">Fix whatever it is complaining about, then retry below. Nothing is lost by retrying.</p>
     </div>
+<?php elseif ($status === Document::NEEDS_LINK): ?>
+    <?php
+    /*
+     * The Existing Invoice route stopped and wants a person.
+     *
+     * The reason is on the newest `link` event and is repeated here rather than
+     * left to the queue: somebody who arrived at this page from the document
+     * list should not have to go somewhere else to find out what is wrong.
+     */
+    $linkEvent = null;
+
+    foreach ($events as $event) {
+        if ((string) $event['stage'] === 'link') {
+            $linkEvent = $event;
+            break;
+        }
+    }
+    ?>
+    <div class="card card-warn">
+        <h2>Waiting to be linked</h2>
+        <p>
+            This document carries a handwritten Clearbooks Number, so it belongs to an invoice that is
+            already in Clear Books rather than being one to post. It has been read and extracted like
+            any other — only the last step is outstanding, and the match did not settle on its own.
+        </p>
+        <?php if ($linkEvent !== null): ?>
+            <p class="mono break"><?= e((string) $linkEvent['message']) ?></p>
+        <?php endif; ?>
+        <p class="muted">
+            Nothing happens to it on its own. The Existing Invoice queue offers the three things that
+            can: link it to the right record, send it down the New Invoice route, or delete it.
+        </p>
+        <?php if (can('queue.view')): ?>
+            <p>
+                <a class="btn btn-primary" href="<?= e(url('/existing/' . $id)) ?>">Open it in the queue</a>
+            </p>
+        <?php endif; ?>
+    </div>
+<?php elseif ($status === Document::POSSIBLE_DUPLICATE): ?>
+    <?php
+    /*
+     * The duplicate gate stopped it and wants a person.
+     *
+     * The reason is on the newest `dedup` event and is repeated here rather
+     * than left to the queue, for the same reason the linking one is: somebody
+     * who arrived from the document list should not have to go somewhere else
+     * to find out what is wrong. It names the Clear Books records at issue.
+     */
+    $dedupEvent = null;
+
+    foreach ($events as $event) {
+        if ((string) $event['stage'] === 'dedup') {
+            $dedupEvent = $event;
+            break;
+        }
+    }
+    ?>
+    <div class="card card-danger">
+        <h2>This may already be in Clear Books</h2>
+        <p>
+            Nothing was written on this page to say so — no handwritten Clear Books number — but what was
+            extracted from it looks like a purchase document Clear Books already holds. A bill entered by
+            hand months ago carries no annotation either, and neither does a second scan of one already
+            filed. Submitting it would put the same purchase into the accounts twice.
+        </p>
+        <?php if ($dedupEvent !== null): ?>
+            <p class="mono break"><?= e((string) $dedupEvent['message']) ?></p>
+        <?php endif; ?>
+        <p class="muted">
+            It has been read, extracted and matched like any other document — only the last step is
+            outstanding. Nothing happens to it on its own: either it is the same invoice and this copy
+            goes, or it is genuinely new and carries on to be reviewed.
+        </p>
+        <?php if (can('queue.view')): ?>
+            <p>
+                <a class="btn btn-primary" href="<?= e(url('/duplicates/' . $id)) ?>">
+                    Compare it side by side
+                </a>
+            </p>
+        <?php endif; ?>
+    </div>
 <?php elseif ($waiting): ?>
     <div class="card notice-card">
         <h2>Waiting here</h2>
@@ -130,6 +237,12 @@ $paperlessBase = rtrim((string) (Setting::get('paperless_base_url') ?? ''), '/')
         <h2>Where it is</h2>
         <ul class="meta-list">
             <li><strong>Stage</strong> <?= e(Document::label($status)) ?></li>
+            <?php /* The route is not the status and does not repeat it: it says
+                     which of the two flows the document was sent down when it
+                     was read, and it stays readable after the two rejoin. */ ?>
+            <li><strong>Flow</strong> <?= e(Document::routeLabel(
+                $document['route'] === null ? null : (string) $document['route']
+            )) ?></li>
             <li><strong>Document type</strong> <?= e($document['doc_type'] ?? 'not yet classified') ?></li>
             <li><strong>Attempts</strong> <?= (int) $document['attempts'] ?></li>
             <li><strong>Last change</strong> <?= e(format_datetime((string) $document['updated_at'])) ?></li>
@@ -164,49 +277,30 @@ $paperlessBase = rtrim((string) (Setting::get('paperless_base_url') ?? ''), '/')
              the whole job and a reviewer should not have to scroll between
              them. This is the shape the full review screen grows into. */ ?>
     <div class="doc-split">
-        <div class="doc-pane">
-            <h3>The scan</h3>
-
-            <?php if ($pdfBytes !== null): ?>
-                <?php /* <object> rather than <iframe>: the browser's own PDF
-                         viewer, from our own same-origin route, and it degrades
-                         to the link inside it where there is no viewer. */ ?>
-                <object class="pdf-frame" data="<?= e(url('/documents/' . $id . '/pdf')) ?>" type="application/pdf">
-                    <p class="muted">
-                        Your browser will not display the PDF here.
-                        <a href="<?= e(url('/documents/' . $id . '/pdf')) ?>" target="_blank" rel="noopener">Open it in a new tab</a>.
-                    </p>
-                </object>
-            <?php else: ?>
-                <p class="muted">No PDF stored yet.</p>
-            <?php endif; ?>
+        <div class="doc-pane doc-pane-scan">
+            <?php /* The rendered pages, with the PDF a button underneath — the
+                     same viewer the review screen uses, and on this page the
+                     images are doubly the point: they are exactly what the model
+                     was shown, so if it misread something this is what it
+                     misread. */ ?>
+            <?= partial('partials/scan', [
+                'documentId' => $id,
+                'pages'      => $pages,
+                'hasPdf'     => $pdfBytes !== null,
+                'missing'    => 'Nothing has been stored for this document yet — neither the PDF'
+                    . ' nor any rendered page.',
+            ]) ?>
 
             <?php if ($pages !== []): ?>
-                <h3>Pages sent to the model</h3>
-                <p class="muted">
+                <p class="field-hint">
                     <?= count($pages) ?> page<?= count($pages) === 1 ? '' : 's' ?>,
                     rendered at <?= (int) $pages[0]['width'] ?>&times;<?= (int) $pages[0]['height'] ?>.
-                    These are the images the model actually saw — if it misread something,
-                    look here first.
+                    These are the images the model actually saw.
                 </p>
-
-                <div class="page-strip">
-                    <?php foreach ($pages as $page): ?>
-                        <figure class="page-thumb">
-                            <a href="<?= e(url('/documents/' . $id . '/page/' . $page['page_number'])) ?>"
-                               target="_blank" rel="noopener">
-                                <img src="<?= e(url('/documents/' . $id . '/page/' . $page['page_number'])) ?>"
-                                     alt="Page <?= (int) $page['page_number'] ?> of this document"
-                                     loading="lazy" width="<?= (int) $page['width'] ?>" height="<?= (int) $page['height'] ?>">
-                            </a>
-                            <figcaption>Page <?= (int) $page['page_number'] ?></figcaption>
-                        </figure>
-                    <?php endforeach; ?>
-                </div>
             <?php endif; ?>
         </div>
 
-        <div class="doc-pane">
+        <div class="doc-pane doc-pane-text">
             <h3>The transcription</h3>
 
             <?php if ($ocr === null): ?>
@@ -232,18 +326,24 @@ $paperlessBase = rtrim((string) (Setting::get('paperless_base_url') ?? ''), '/')
                 <?php if ($structured !== null): ?>
                     <div class="annotation-summary">
                         <?php
-                        // The field names the production prompt emits. Note the
-                        // lower-case b in clearbooksNumber — it does not match
-                        // how the rest of the application spells Clear Books,
-                        // and reading the wrong key makes both fields look
-                        // absent on every document.
-                        $clearBooks = $structured['clearbooksNumber'] ?? null;
-                        $project    = $structured['project'] ?? null;
+                        // Straight off the columns. `OcrResult` is the one place
+                        // that knows the prompt's field names — `clearbooksNumber`
+                        // with its lower-case b, and `project` rather than
+                        // `projectCode` — and a template picking keys out of the
+                        // decoded response by hand is how both fields came to
+                        // read as absent on every document once before.
+                        $clearBooks = OcrResult::clearbooksNumber($ocr);
+                        $project    = OcrResult::projectCode($ocr);
                         ?>
                         <p>
                             <strong>Clearbooks Number</strong>
-                            <?php if (is_scalar($clearBooks) && (string) $clearBooks !== ''): ?>
-                                <span class="badge badge-accent mono"><?= e((string) $clearBooks) ?></span>
+                            <?php if ($clearBooks !== null): ?>
+                                <span class="badge badge-accent mono"><?= e($clearBooks) ?></span>
+                                <?php if (!OcrResult::isUsableNumber($clearBooks)): ?>
+                                    <span class="cell-sub text-danger">
+                                        — not digits only, so it was not treated as a Clear Books reference
+                                    </span>
+                                <?php endif; ?>
                             <?php else: ?>
                                 <span class="muted">none found</span>
                                 <span class="cell-sub">— frequently absent, and never guessed at</span>
@@ -251,14 +351,14 @@ $paperlessBase = rtrim((string) (Setting::get('paperless_base_url') ?? ''), '/')
                         </p>
                         <p>
                             <strong>Project</strong>
-                            <?php if (is_string($project) && $project !== ''): ?>
+                            <?php if ($project !== null): ?>
                                 <span class="badge badge-accent mono"><?= e($project) ?></span>
                             <?php else: ?>
                                 <span class="muted">none found</span>
                             <?php endif; ?>
                         </p>
 
-                        <?php $annotations = is_array($structured['handwrittenAnnotations'] ?? null) ? $structured['handwrittenAnnotations'] : []; ?>
+                        <?php $annotations = OcrResult::annotations($ocr); ?>
                         <?php if ($annotations !== []): ?>
                             <p><strong>Handwritten on the page</strong></p>
                             <ul class="plain-list">
@@ -317,7 +417,16 @@ $paperlessBase = rtrim((string) (Setting::get('paperless_base_url') ?? ''), '/')
 
 <?php if ($extraction !== null): ?>
     <h2 class="section-title">What was extracted</h2>
-    <?= partial('partials/extraction', ['extraction' => $extraction, 'matches' => $matches]) ?>
+    <?php /* `$issues` marks each value the pipeline was unsure of on the value
+             itself, the same way the review screen marks the input. This page
+             is read-only, so the marks are all it can offer — but "which of
+             these forty values is the doubtful one" is the same question here
+             as it is there, and it should not have two answers. */ ?>
+    <?= partial('partials/extraction', [
+        'extraction' => $extraction,
+        'matches'    => $matches,
+        'issues'     => $issues,
+    ]) ?>
 <?php endif; ?>
 
 <?php if ($matches !== []): ?>

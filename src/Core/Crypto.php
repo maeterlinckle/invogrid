@@ -8,9 +8,9 @@ namespace App\Core;
  * Authenticated symmetric encryption for the few secrets that have to live in
  * the database rather than in .env.
  *
- * Here that is every integration credential: the Paperless API token, the Clear
- * Books OAuth2 client secret and its access/refresh tokens, the OpenAI and
- * Anthropic API keys, and the webhook shared secret. An administrator has to be
+ * Here that is every integration credential: the Clear Books OAuth2 client
+ * secret and its access/refresh tokens, and the OpenAI and Anthropic API keys.
+ * An administrator has to be
  * able to rotate them from the Settings page without shell access, so they
  * cannot be .env-only — but a key sitting in a `settings` row in the clear
  * would be readable by anyone with a database backup, and those get emailed

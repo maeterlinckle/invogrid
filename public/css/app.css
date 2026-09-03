@@ -10,8 +10,11 @@
    Where it differs, and why:
      - The accent is indigo rather than blue, so the two tools are told apart
        at a glance without leaving the family.
-     - The desktop navigation bar appears at 900px rather than 1150px: this
-       menu has three top-level items, not six, so it fits far sooner.
+     - The desktop navigation bar appears at 1150px, the same as Kitwell's. It
+       was 900px while this menu had three top-level items; a queue per question
+       — review, existing invoices, duplicates — has taken it to six, which is
+       Kitwell's count, so the difference that justified the lower breakpoint
+       has gone.
      - There is a document/data split-pane vocabulary Kitwell has no need for.
    ========================================================================== */
 
@@ -149,6 +152,16 @@ a:hover { color: var(--accent-hover); }
     margin-inline: auto;
     padding-inline: var(--space-4);
 }
+
+/* The document-facing screens — the three queues, the document list and record,
+   the dashboard — opt into this.
+   1200px is a measure for reading prose, and none of those screens is prose:
+   they are a scan beside a form, or a table of six columns that has to stay
+   readable without wrapping every cell onto three lines. 1760px is about as
+   wide as a line of table text stays scannable, and it leaves a margin on a
+   1920 monitor rather than running edge to edge. Forms inside keep their own
+   `max-width`, so nothing here stretches a column of text boxes. */
+.container-wide { max-width: 1760px; }
 
 .muted { color: var(--text-muted); }
 .mono { font-family: var(--font-mono); font-size: 0.86em; }
@@ -370,11 +383,13 @@ details[open] > summary .caret { transform: rotate(180deg); }
 .nav-sublink { font-weight: 500; }
 
 /* Desktop navigation ------------------------------------------------------- */
-/* The horizontal bar appears at 900px. Three top-level items, the account block
-   and the brand come to roughly 700px of content, so the bar has room well
-   before the container's 1200px cap. Below that the drawer is used instead: a
-   vertical list cannot wrap, and it is the same control phones already use. */
-@media (min-width: 900px) {
+/* The horizontal bar appears at 1150px. It was 900px when there were three
+   top-level items and roughly 700px of content; the duplicate queue made a
+   sixth, and six items plus the account block and the brand run to about
+   1100px, which is a wrapped two-row header at 900. Below the breakpoint the
+   drawer is used instead: a vertical list cannot wrap, and it is the same
+   control phones already use. */
+@media (min-width: 1150px) {
     .nav-toggle { display: none; }
 
     /* Block padding is a mobile tap-target concern; on a desktop the row's own
@@ -534,6 +549,15 @@ main.container { padding-block: var(--space-5) var(--space-6); }
 .card-warn   { border-left: 4px solid var(--warn); }
 .card-danger { border-left: 4px solid var(--danger); }
 
+/* Present but demoted: the duplicate screen shows a candidate that no longer
+   clears the bar, because hiding it would leave the page saying "possible
+   duplicate" with nothing visible to be a duplicate of. Sunken rather than
+   faded — text a person may still have to read must not lose its contrast. */
+.card-muted {
+    background: var(--bg-sunken);
+    box-shadow: none;
+}
+
 .plain-list { margin: 0; padding-left: var(--space-4); }
 .plain-list li + li { margin-top: var(--space-1); }
 
@@ -631,6 +655,45 @@ main.container { padding-block: var(--space-5) var(--space-6); }
 .table tbody tr:hover { background: var(--bg-hover); }
 .table-compact th, .table-compact td { padding: var(--space-2) var(--space-3); }
 
+/* Room to breathe, once there is room to give.
+   The tight padding above is a phone measurement: on a 1920 monitor the same
+   table reads as a wall, and the rows a reviewer is scanning for run together.
+   Nothing changes below 1150px — the same breakpoint the navigation bar uses,
+   so a screen has either the desktop treatment throughout or none of it. */
+@media (min-width: 1150px) {
+    .table { font-size: 1rem; }
+    .table th, .table td { padding: var(--space-3) var(--space-4); }
+    .table-compact th, .table-compact td { padding: var(--space-2) var(--space-3); }
+
+    /* A queue is read down its rows rather than across them, so the row
+       separators earn a little more space than the columns do. */
+    .table tbody th, .table tbody td { line-height: 1.45; }
+}
+
+/*
+ * Column widths, stated rather than left to the browser.
+ *
+ * `table-layout: auto` gives the widest column whatever is left, which on the
+ * queues means the "what is outstanding" sentence takes two thirds of the page
+ * and the supplier — the thing being scanned for — is squeezed into three
+ * wrapped lines. These say what each column is *for* instead, and are applied
+ * per screen rather than globally, because a width that suits a queue is wrong
+ * for the pipeline log.
+ *
+ * They are `min-width` on the cell rather than `width` on a <col>: a table in
+ * `.table-wrap` can scroll sideways, so a minimum is honoured and a percentage
+ * is negotiated away.
+ */
+.col-tight   { width: 1%; white-space: nowrap; }
+.col-narrow  { min-width: 7rem; }
+.col-date    { min-width: 8rem; white-space: nowrap; }
+.col-name    { min-width: 16rem; }
+.col-wide    { min-width: 22rem; }
+
+/* The one exception to "no fixed widths": a description column is the reason
+   the table is wide at all, and it should take what is left over. */
+.col-grow { width: 100%; }
+
 /* Money reads as a column of figures, so it lines up on the right and uses
    tabular digits — a column of amounts whose decimal points wander is a column
    nobody can add up by eye. */
@@ -684,7 +747,21 @@ td.actions > * + * { margin-left: var(--space-1); }
     font-size: 0.82rem;
 }
 
+/* A numbered explanation — "what happens next" on the upload page. Ordinary
+   list numbering, given room to breathe: the point is that it is read once,
+   understood, and never looked at again. */
+.steps {
+    margin: 0 0 var(--space-3);
+    padding-left: var(--space-5);
+    display: grid;
+    gap: var(--space-2);
+    font-size: 0.92rem;
+}
+
+.steps li { padding-left: var(--space-1); }
+
 .meta-list {
+
     list-style: none;
     margin: 0 0 var(--space-3);
     padding: 0;
@@ -734,13 +811,18 @@ td.actions > * + * { margin-left: var(--space-1); }
 .btn-icon .btn-label { display: none; }
 
 /* In the drawer there is room for the label; on the bar there is not. */
-@media (max-width: 899px) {
+@media (max-width: 1149px) {
     .btn-icon .btn-label { display: inline; }
 }
 
 /* --- Forms ---------------------------------------------------------------- */
 .form { max-width: 720px; }
 .form.card { max-width: 720px; }
+
+/* A form that is a whole pane rather than a column of boxes on a page. The
+   review screen's is one: it holds a six-column table, and capping it at 720px
+   would waste the width the screen was widened to have. */
+.form-full { max-width: none; }
 
 .field { margin-bottom: var(--space-4); }
 
@@ -779,6 +861,10 @@ textarea.input { min-height: 120px; resize: vertical; }
 
 .input-with-button { display: flex; flex-wrap: wrap; gap: var(--space-2); align-items: stretch; }
 .input-with-button .input { flex: 1 1 12rem; min-width: 0; }
+
+/* A short answer — a number of minutes, a code — should not get a box the
+   width of the card. The pair still wraps on a narrow screen. */
+.input-with-button.compact { max-width: 24rem; }
 .btn-inline { white-space: nowrap; border: 1px solid var(--border); }
 
 .checkbox {
@@ -970,7 +1056,7 @@ textarea.input { min-height: 120px; resize: vertical; }
 [data-theme="light"] .brand-logo-dark,
 [data-theme="dark"]  .brand-logo-light { display: none; }
 
-@media (min-width: 900px) {
+@media (min-width: 1150px) {
     /* 176px, not 128.
        A wordmark logo is commonly 4:1 or wider, and at 36px tall that wants
        144px. The old 128px cap did not distort it — `object-fit: contain`
@@ -993,6 +1079,21 @@ textarea.input { min-height: 120px; resize: vertical; }
         overflow: hidden;
         text-overflow: ellipsis;
     }
+}
+
+/* --- Two blocks side by side ----------------------------------------------
+   For a pair of sections where one is narrow by nature and the other is not —
+   the dashboard's stage tally beside its recent-activity list. Stacked below
+   the desktop breakpoint, and the first column takes a third, because a table
+   of "stage, count" does not get better with more room and the one beside it
+   does. `minmax(0, …)` on both, so a wide cell inside cannot push the grid
+   past the page. */
+.wide-split { display: grid; gap: var(--space-4); }
+.wide-split > * { min-width: 0; }
+.wide-split .section-title:first-child { margin-top: 0; }
+
+@media (min-width: 1150px) {
+    .wide-split { grid-template-columns: minmax(0, 1fr) minmax(0, 2fr); align-items: start; }
 }
 
 /* --- Spacing between blocks that are not cards ----------------------------
@@ -1031,6 +1132,31 @@ textarea.input { min-height: 120px; resize: vertical; }
     }
 }
 
+/*
+ * The review screen's own proportions, once there is width to divide.
+ *
+ * An even split is right while both sides are documents. On the review screen
+ * they are not: the left is one page of A4, which stops being easier to read
+ * somewhere around 700px, and the right is a form with a six-column line table
+ * in it, which does not. So past 1500px the extra width goes to the form.
+ */
+@media (min-width: 1500px) {
+    .doc-split-review { grid-template-columns: minmax(0, 5fr) minmax(0, 7fr); }
+}
+
+/* The scan pane does not scroll; the image inside it does.
+   Without this the pane and the image are two nested scrolling boxes, and a
+   wheel gesture over the scan moves whichever one the browser feels like. */
+@media (min-width: 1100px) {
+    .doc-pane-scan {
+        display: flex;
+        flex-direction: column;
+        overflow: hidden;
+    }
+
+    .doc-pane-scan > .scan { flex: 1 1 auto; min-height: 0; }
+}
+
 .doc-pane {
     background: var(--bg-raised);
     border: 1px solid var(--border);
@@ -1040,9 +1166,16 @@ textarea.input { min-height: 120px; resize: vertical; }
 }
 
 .doc-pane h3 { margin-top: 0; }
-.doc-pane h3 + h3,
-.doc-pane .page-strip + h3 { margin-top: var(--space-5); }
+.doc-pane h3 + h3 { margin-top: var(--space-5); }
 
+/* The embedded PDF. Only ever reached now through the scan viewer's "View PDF"
+   button — every screen that used to embed it shows the rendered page images
+   instead, and this is what opens underneath them. `.scan-pdf` sets the
+   height; this is everything else about the box.
+
+   The thumbnail strip that used to live here went with the change: the viewer
+   has its own, and two page pickers that looked different and behaved
+   differently was one too many. */
 .pdf-frame {
     display: block;
     width: 100%;
@@ -1051,37 +1184,6 @@ textarea.input { min-height: 120px; resize: vertical; }
     border: 1px solid var(--border);
     border-radius: var(--radius-sm);
     background: var(--bg-sunken);
-}
-
-/* Page thumbnails: a row that scrolls sideways rather than a grid that reflows.
-   The pages are in order and the order matters, so keeping them on one line
-   keeps that visible. */
-.page-strip {
-    display: flex;
-    gap: var(--space-3);
-    overflow-x: auto;
-    padding-bottom: var(--space-2);
-    -webkit-overflow-scrolling: touch;
-}
-
-.page-thumb { margin: 0; flex: 0 0 auto; width: 130px; }
-
-.page-thumb img {
-    display: block;
-    width: 100%;
-    height: auto;
-    border: 1px solid var(--border);
-    border-radius: var(--radius-sm);
-    /* White regardless of theme: a scan of white paper on a dark card reads as
-       a hole in the page otherwise. */
-    background: #ffffff;
-}
-
-.page-thumb figcaption {
-    margin-top: var(--space-1);
-    font-size: 0.8rem;
-    color: var(--text-muted);
-    text-align: center;
 }
 
 /* The transcription, keeping the document's own line breaks and column spacing
@@ -1140,6 +1242,243 @@ textarea.input { min-height: 120px; resize: vertical; }
    went out of its way to keep. */
 .line-description { min-width: 18rem; white-space: pre-line; }
 
+/* --- The scan viewer -------------------------------------------------------
+   What a reviewer looks at, and by default it is **the page image rather than
+   the PDF**.
+
+   The images already exist: every document is rendered to one PNG per page
+   before anything is read, and those are the images the model itself was shown.
+   Serving one is a same-origin `<img>` the browser paints immediately, where
+   the `<object>` boots a whole PDF viewer with its own toolbar, its own
+   scrolling and its own idea of zoom inside a box a third of the screen wide.
+   The PDF is still one click away underneath, for the times the render is not
+   enough — a signature to squint at, a second page to flick to quickly.
+
+   Two sizes and no more: fit the width of the pane, or the image's own pixels
+   with the box scrolling. A zoom slider is a control nobody uses twice; "make
+   it big enough to read the handwriting" is the whole requirement.
+   ========================================================================== */
+
+.scan { display: flex; flex-direction: column; gap: var(--space-3); min-height: 0; }
+
+.scan-stage {
+    flex: 1 1 auto;
+    min-height: 0;
+    /* Enough to read an A4 page at a glance when the pane is not the flex
+       parent — a stacked phone layout, or the duplicate screen's full-width
+       card. The flex rule above wins wherever the pane sets a height. */
+    height: 72vh;
+    overflow: auto;
+    overscroll-behavior: contain;
+    -webkit-overflow-scrolling: touch;
+    /* The strip and the page arrows are in-page anchors and scroll this box;
+       the reduced-motion block at the end of this file turns it off again for
+       anybody who has asked their system for less movement. */
+    scroll-behavior: smooth;
+    background: var(--bg-sunken);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+}
+
+/* A page scrolled to sits at the top of the box rather than jammed against its
+   edge, and a multi-page document reads as separate sheets rather than a roll. */
+.scan-page + .scan-page { margin-top: var(--space-3); }
+.scan-page { scroll-margin-top: var(--space-2); }
+
+.scan-page {
+    display: block;
+    width: 100%;
+    /* A ceiling, for the screens where the viewer is a full-width card rather
+       than half a split — the duplicate comparison, chiefly. A sheet of A4
+       stretched across 1700px is not easier to read, it is a stretch of the
+       neck; 52rem is about where a scanned page stops gaining from more width.
+       Lifted by "actual size", which is the control for reading the small
+       print. */
+    max-width: 52rem;
+    height: auto;
+    margin-inline: auto;
+    /* White whatever the theme: a scan of white paper on a dark ground reads
+       as a hole in the page. */
+    background: #ffffff;
+}
+
+/* Actual size: the image keeps its own pixels and the box scrolls both ways.
+   `max-width: none` is the load-bearing half — the reset gives every image a
+   width ceiling, and without lifting it "actual size" silently does nothing. */
+.scan-stage.is-actual { display: block; }
+.scan-stage.is-actual .scan-page { width: auto; max-width: none; margin-inline: 0; }
+
+.scan-bar {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: var(--space-2);
+    justify-content: space-between;
+}
+
+.scan-nav { display: flex; align-items: center; gap: var(--space-2); }
+.scan-count { font-size: 0.88rem; color: var(--text-muted); white-space: nowrap; }
+
+/* A page picker only worth showing past two pages; below that the arrows are
+   quicker than aiming at a thumbnail. Ordinary in-page anchors, so it still
+   works with no script — which is why these are links and not buttons. */
+.scan-strip { display: flex; gap: var(--space-2); overflow-x: auto; padding-bottom: var(--space-1); }
+
+.scan-strip a {
+    flex: 0 0 auto;
+    display: block;
+    padding: 2px;
+    background: var(--bg-sunken);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    line-height: 0;
+}
+
+.scan-strip a img { display: block; width: 54px; height: auto; background: #ffffff; }
+.scan-strip a[aria-current="true"] { border-color: var(--accent); box-shadow: 0 0 0 2px var(--accent-soft); }
+
+/* The PDF, revealed under the image rather than replacing it — a reviewer who
+   opened it to check one thing should not have to work out how to get the
+   image back. */
+.scan-pdf { display: grid; gap: var(--space-2); }
+.scan-pdf .pdf-frame { height: 68vh; }
+
+/* --- Per-field issues ------------------------------------------------------
+   Every note, every unresolved match and every uncertain reading is drawn on
+   the field it is about. The banner this replaces listed four sentences at the
+   top of a screen with forty inputs below it, which left the reviewer to work
+   out which four boxes were meant — the part of the job the machine can do.
+
+   Two tones and no more: `danger` stands between this document and Clear Books,
+   `warn` is worth a look and may well turn out to be right. Both are drawn the
+   same way, with a colour variable swapped, so a field cannot be marked in a
+   way the reader has to learn.
+   ========================================================================== */
+
+.is-flagged {
+    --flag: var(--warn);
+    --flag-soft: var(--warn-soft);
+}
+
+.is-flagged-danger {
+    --flag: var(--danger);
+    --flag-soft: var(--danger-soft);
+}
+
+/* The rule down the left edge is the thing seen at a glance; the colour on the
+   input's own border is what confirms which control it means when two fields
+   sit side by side in a `.field-row`. */
+.field.is-flagged {
+    padding-left: var(--space-3);
+    border-left: 3px solid var(--flag);
+    border-radius: 0 var(--radius-sm) var(--radius-sm) 0;
+}
+
+.field.is-flagged > .input,
+.field.is-flagged .input { border-color: var(--flag); }
+
+.flag-label { display: flex; align-items: baseline; gap: var(--space-2); flex-wrap: wrap; }
+
+/* The word, not just a colour: colour alone is not a signal somebody with a
+   colour vision deficiency receives, and this is the whole point of the
+   screen. */
+.flag-tag {
+    display: inline-block;
+    padding: 1px 8px;
+    border-radius: 999px;
+    background: var(--flag-soft, var(--warn-soft));
+    color: var(--flag, var(--warn));
+    font-size: 0.72rem;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    white-space: nowrap;
+}
+
+/* The fallbacks matter: both of these are used in a couple of places that are
+   not inside a `.is-flagged` — a heading for the line-item table, a chip in the
+   index — and a `var()` with nothing behind it resolves to nothing at all. */
+.flag-notes {
+    list-style: none;
+    margin: var(--space-1) 0 0;
+    padding: 0;
+    display: grid;
+    gap: 2px;
+    font-size: 0.86rem;
+    line-height: 1.4;
+    color: var(--flag, var(--warn));
+}
+
+.flag-notes li { display: flex; gap: var(--space-2); }
+
+/* A drawn triangle rather than a typed "!". Generated content is read out by
+   some screen readers, and "exclamation mark" before every note is noise on top
+   of a message that already says what is wrong — while the word in `.flag-tag`
+   beside the label carries the meaning for anybody who cannot see the colour. */
+.flag-notes li::before {
+    content: "";
+    flex: 0 0 auto;
+    width: 0;
+    height: 0;
+    margin-top: 0.32em;
+    border-left: 4px solid transparent;
+    border-right: 4px solid transparent;
+    border-bottom: 7px solid currentColor;
+}
+
+/* A flagged cell in the line-item table. The rule goes on the cell rather than
+   the input so a whole-row problem — a line total that does not follow from
+   the quantity — has somewhere to be drawn. */
+.table td.is-flagged {
+    box-shadow: inset 3px 0 0 var(--flag);
+    /* The flat colour first for anything without `color-mix`: a stronger tint
+       than intended is still a correct signal, where no tint at all is not. */
+    background: var(--flag-soft);
+    background: color-mix(in srgb, var(--flag-soft) 45%, transparent);
+}
+
+.table td.is-flagged .input { border-color: var(--flag); }
+.table td .flag-notes { font-size: 0.8rem; margin-top: var(--space-1); }
+
+/* The index at the top of the form: one link per flagged field, so the answer
+   to "what needs a look" is a list rather than a scroll. */
+.issue-index {
+    padding: var(--space-3) var(--space-4);
+    margin-bottom: var(--space-4);
+    border: 1px solid var(--border);
+    /* The edge takes the worst tone in the panel, so "something here stops this
+       being submitted" is legible before a word of it is read. The chips inside
+       set their own, so a red panel can still hold amber ones. */
+    border-left: 4px solid var(--flag, var(--warn));
+    border-radius: var(--radius-sm);
+    background: var(--bg-raised);
+}
+
+.issue-index.is-clear { --flag: var(--ok); }
+.issue-index h3 { margin-bottom: var(--space-2); font-size: 0.98rem; }
+.issue-index p:last-child { margin-bottom: 0; }
+
+.issue-jumps { display: flex; flex-wrap: wrap; gap: var(--space-2); margin: 0; padding: 0; list-style: none; }
+
+.issue-jump {
+    display: inline-flex;
+    align-items: center;
+    gap: var(--space-2);
+    padding: 3px 10px;
+    border: 1px solid var(--flag);
+    border-radius: 999px;
+    background: var(--flag-soft);
+    color: var(--flag);
+    font-size: 0.84rem;
+    font-weight: 600;
+    text-decoration: none;
+}
+
+.issue-jump:hover { color: var(--flag); text-decoration: underline; }
+
+/* A field jumped to should not land under the sticky header. */
+.field, .table td { scroll-margin-top: calc(var(--header-h, 60px) + var(--space-4)); }
+
 /* --- The review screen ---------------------------------------------------- */
 
 /* `.field-row` is two columns by default; the review form uses it for three
@@ -1169,14 +1508,54 @@ details.fieldset[open] > summary { margin-bottom: var(--space-4); }
 .table td.amount > .input { text-align: right; font-variant-numeric: tabular-nums; }
 .table td > textarea.input { resize: vertical; min-height: 3.2rem; }
 
+/*
+ * The line table's own column widths.
+ *
+ * Left to itself the browser gives every column an equal share, which on a
+ * six-column table of mostly-numbers means three characters of quantity get as
+ * much room as a three-line product description. The numeric columns are sized
+ * to the longest number anybody posts to Clear Books and no wider; the two
+ * pickers to the length of a nominal code plus its name; the description takes
+ * everything left over, and on a wide screen that is most of it.
+ */
+.table-lines { table-layout: fixed; min-width: 48rem; }
+
+/* The only `auto` column, so it takes everything the others leave: 8rem on a
+   narrow pane, and better than 25rem beside a scan on a 1920 monitor. The
+   others are sized to their content and stop there — a quantity is three
+   characters and a nominal code is five, and neither reads better with more.
+   The two pickers are `<select>`s, which truncate an over-long option with an
+   ellipsis and show it in full when opened, so they are the cheapest place to
+   take the room from.
+
+   `min-width` on the table rather than a media query, so what decides the
+   layout is the width of the *pane* — which on this screen is about half the
+   window — rather than the width of the window. Below it the table scrolls
+   inside `.table-wrap`, which is what that wrapper is for. */
+.table-lines .col-desc { width: auto; }
+.table-lines .col-qty { width: 4.5rem; }
+.table-lines .col-money { width: 6.5rem; }
+.table-lines .col-picker { width: 11rem; }
+
 /* The transcription beside the scan scrolls on its own rather than stretching
    the pane: on a long document it is several screens of text and the reviewer
    wants the PDF to stay where it is. */
 .doc-pane .ocr-text { max-height: 22rem; overflow-y: auto; }
 
-/* On the review screen the PDF is the reference the whole job is checked
-   against, so it gets more height than it does on the pipeline record. */
-.doc-pane .pdf-frame { height: 72vh; }
+/* On the review screen the transcription is folded away under the scan. It is
+   InvoGrid's own reading of the page and the scan is the authority; a reviewer
+   who wants the text wants it deliberately, and unfolded it pushes the page
+   images off the pane on a laptop. */
+.ocr-panel { flex: 0 0 auto; }
+
+.ocr-panel > summary {
+    cursor: pointer;
+    padding: var(--space-2) 0;
+    font-weight: 600;
+    font-size: 0.92rem;
+}
+
+.ocr-panel[open] > summary { margin-bottom: var(--space-2); }
 
 /* --- The prompt editor ---------------------------------------------------- */
 

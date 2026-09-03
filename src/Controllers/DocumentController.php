@@ -19,6 +19,7 @@ use App\Models\Extraction;
 use App\Models\OcrResult;
 use App\Models\PipelineJob;
 use App\Models\Submission;
+use App\Services\FieldIssues;
 use App\Services\IngestStage;
 use App\Services\Pipeline;
 use App\Services\SubmitStage;
@@ -41,7 +42,7 @@ final class DocumentController extends Controller
         $filters = [
             'status'        => (string) Request::query('status', ''),
             'doc_type'      => (string) Request::query('doc_type', ''),
-            'correspondent' => (string) Request::query('correspondent', ''),
+            'supplier' => (string) Request::query('supplier', ''),
             'from'          => (string) Request::query('from', ''),
             'to'            => (string) Request::query('to', ''),
             'q'             => (string) Request::query('q', ''),
@@ -54,6 +55,10 @@ final class DocumentController extends Controller
 
         $this->view('documents/index', [
             'pageTitle'  => 'Documents',
+
+            // A queue is a table read on a monitor, not a column of prose:
+            // see the layout for what `wide` does to the content column.
+            'wide'       => true,
             'documents'  => Document::paginate($filters, self::PER_PAGE, ($page - 1) * self::PER_PAGE),
             'filters'    => $filters,
             'filtered'   => array_filter($filters, static fn (string $v): bool => trim($v) !== '') !== [],
@@ -63,9 +68,9 @@ final class DocumentController extends Controller
             'counts'     => Document::countsByStatus(),
             'queue'      => PipelineJob::countsByStatus(),
 
-            // The correspondents actually on file, so the commonest filter is a
+            // The supplier names actually on file, so the commonest filter is a
             // list to pick from rather than a name to spell correctly.
-            'correspondents' => Document::correspondents(),
+            'supplierNames' => Document::supplierNames(),
             'docTypes'       => DocumentType::all(),
         ]);
     }
@@ -99,7 +104,7 @@ final class DocumentController extends Controller
         }
 
         $this->view('documents/print', [
-            'pageTitle'  => 'Summary — Paperless #' . $document['paperless_doc_id'],
+            'pageTitle'  => 'Summary — document #' . (int) $document['id'],
             'backHref'   => '/documents/' . $documentId,
             'document'   => $document,
             'extraction' => $extraction,
@@ -126,8 +131,13 @@ final class DocumentController extends Controller
             ? null
             : IngestStage::absolutePath((string) $document['pdf_path']);
 
+        $matches = $extraction === null
+            ? []
+            : EntityMatch::forExtraction((int) $extraction['id']);
+
         $this->view('documents/show', [
-            'pageTitle' => 'Document #' . $document['paperless_doc_id'],
+            'pageTitle' => 'Document #' . (int) $document['id'],
+            'wide'      => true,
             'document'  => $document,
             'events'    => DocumentEvent::forDocument((int) $document['id']),
             'jobs'      => PipelineJob::forDocument((int) $document['id']),
@@ -140,7 +150,15 @@ final class DocumentController extends Controller
             // The matching stage's conclusions, which supersede the extraction's
             // own guess about the supplier: the deterministic name pass resolves
             // plenty of the ones the model could not place.
-            'matches'    => $extraction === null ? [] : EntityMatch::forExtraction((int) $extraction['id']),
+            'matches'    => $matches,
+
+            // The same per-field attribution the review screen uses. This page
+            // cannot be edited, so the marks are all it offers — but "which of
+            // these values was the doubtful one" is the same question on both
+            // screens and must not have two answers.
+            'issues'     => $extraction === null
+                ? null
+                : FieldIssues::build($extraction, $matches, CustomField::extracted()),
 
             // What went to Clear Books, if anything did. The "Open in Clear
             // Books" action is the only way to set a project code, so it has
@@ -179,7 +197,16 @@ final class DocumentController extends Controller
 
         header('Content-Type: application/pdf');
         header('Content-Length: ' . (string) filesize($path));
-        header('Content-Disposition: inline; filename="paperless-' . (int) $document['paperless_doc_id'] . '.pdf"');
+        // The document's own number, and the name it arrived under when there
+        // is one — that is the half somebody recognises in a downloads folder.
+        $original = trim((string) ($document['original_filename'] ?? ''));
+        $stem     = $original === ''
+            ? ''
+            : '-' . preg_replace('/[^A-Za-z0-9._-]+/', '-', pathinfo($original, PATHINFO_FILENAME));
+
+        $filename = 'invogrid-' . (int) $document['id'] . mb_substr($stem, 0, 60) . '.pdf';
+
+        header('Content-Disposition: inline; filename="' . $filename . '"');
         header('X-Content-Type-Options: nosniff');
         header('Cache-Control: private, max-age=300');
 
@@ -256,6 +283,28 @@ final class DocumentController extends Controller
         } catch (Throwable $e) {
             Flash::error($e->getMessage());
             Response::redirect('/documents/' . $documentId);
+        }
+
+        /*
+         * Sending a document to `existing_invoice` is a person saying "this is
+         * a scan of something already in Clear Books", so the route has to
+         * follow — it is what the linking stage reads, and what the matching
+         * stage will read if this document is ever re-matched. That is the
+         * whole reason `needs_review → existing_invoice` and
+         * `ready_to_submit → existing_invoice` are legal: the Clearbooks Number
+         * was read off handwriting on a scan, and somebody holding the page is
+         * better placed to judge it than the model was.
+         *
+         * The reverse gesture is not here. Moving a document *off* the Existing
+         * Invoice flow is the queue's "treat it as a new invoice", which flips
+         * the route and re-runs the matching stage so the document lands where
+         * that stage decides rather than wherever a dropdown was set to.
+         *
+         * Every other target leaves the route alone. A retry from `extracting`
+         * is not a statement about which flow this is on.
+         */
+        if ($target === Document::EXISTING_INVOICE) {
+            Document::setRoute($documentId, Document::ROUTE_EXISTING);
         }
 
         // Old jobs are cleared first, or enqueue() would sit beside a failed

@@ -122,8 +122,9 @@ switch ($command) {
         break;
 
     case 'secret:generate':
-        // For the webhook shared secret, which has to be invented rather than
-        // issued by anybody.
+        // A secret that has to be invented rather than issued by anybody.
+        // Nothing in InvoGrid requires one today; it is kept because
+        // generating one correctly is a thing people get wrong by hand.
         echo bin2hex(random_bytes(32)), "\n";
         break;
 
@@ -204,7 +205,7 @@ switch ($command) {
         $document = $id > 0 ? Document::find($id) : null;
 
         if ($document === null) {
-            exit("No document with id {$id}. That is the InvoGrid id, not the Paperless one.\n");
+            exit("No document with id {$id}.\n");
         }
 
         $from   = (string) $document['status'];

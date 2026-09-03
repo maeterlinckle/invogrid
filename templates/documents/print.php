@@ -74,12 +74,12 @@ $matchedName = static function (string $type, ?int $lineIndex) use ($matches): ?
 ?>
 
 <h1 class="print-title">
-    <?= e($plain($extraction['paperless_title'] ?? null)) ?>
+    <?= e($plain($extraction['document_title'] ?? null)) ?>
 </h1>
 
 <p class="print-subtitle">
     <?= e(DocumentType::label($extraction['doc_type'] ?? null)) ?>
-    · Paperless #<?= e((string) $document['paperless_doc_id']) ?>
+    · Document #<?= (int) $document['id'] ?>
     · <?= e(Document::label((string) $document['status'])) ?>
 </p>
 

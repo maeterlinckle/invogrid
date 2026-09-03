@@ -83,7 +83,6 @@ Users
 Application
   settings                    which settings are configured
   set-setting KEY             set one, reading the value from stdin
-  webhook-secret              generate and store a new Paperless shared secret
   config KEY [VALUE]          read or change a value in .env
   migrate [--status]          apply pending database migrations
   db-grant                    re-apply the database grant (fixes a migration
@@ -96,6 +95,7 @@ Application
 Pipeline
   queue [--status]            run one pass of the queue worker, or just look
   refresh [--sync]            refresh the Clear Books cache now
+  sync-invoices [--status]    fetch the bills and credit notes Clear Books holds
   retry ID                    put one failed document back to its failed stage
 
 Server
@@ -105,7 +105,8 @@ Server
                               (no SOURCE_DIR: pull from the project repository)
   permissions                 re-apply ownership and file modes
   package [FILE]              build a distributable archive of this install
-  cron-install                the queue worker and the Clear Books refresh
+  cron-install                the queue worker, the Clear Books refresh and the
+                              invoice sync
   cron-remove                 remove them again
   restart                     restart the web server and PHP-FPM
 
@@ -455,27 +456,6 @@ cmd_set_setting() {
     console settings:set "$1"
 }
 
-# The webhook secret has to be invented rather than issued, and it has to end up
-# in two places: here and the Paperless workflow. Printed once, because that is
-# the only moment anybody can copy it into Paperless.
-cmd_webhook_secret() {
-    local secret
-    secret="$(console secret:generate | tr -d '\r\n')"
-
-    [ -n "$secret" ] || die "Could not generate a secret."
-
-    printf '%s\n' "$secret" | console settings:set paperless_webhook_secret >/dev/null
-
-    step "New Paperless webhook secret"
-    say ""
-    say "    $secret"
-    say ""
-    say "  Put it in the Paperless workflow's webhook action as the header"
-    say "    X-InvoGrid-Secret: $secret"
-    say ""
-    warn "This is the only time it is shown. Anything presenting a different secret is rejected."
-}
-
 cmd_config() {
     local key="${1:-}" value="${2:-}"
 
@@ -545,8 +525,8 @@ cmd_reset_database() {
     say ""
     say "  What is already in Clear Books stays in Clear Books — this cannot"
     say "  withdraw a submitted bill. What is lost is InvoGrid's record of it,"
-    say "  including which Paperless documents have been processed, so anything"
-    say "  re-sent by a workflow would be read and submitted a second time."
+    say "  including which documents have already been submitted — so anything"
+    say "  uploaded again would be read and submitted a second time."
     say ""
 
     # Asks twice and ignores --yes: there is no undo, and a scripted --yes is
@@ -575,11 +555,17 @@ cmd_reset_storage() {
     require_root reset-storage
 
     say ""
-    printf '%sThis deletes every downloaded PDF and every rendered page.%s\n' "$C_BOLD" "$C_RESET"
+    printf '%sThis deletes every ingested PDF and every rendered page.%s\n' "$C_BOLD" "$C_RESET"
     say ""
-    say "  Both are re-fetchable: the PDF comes from Paperless again and the"
-    say "  pages are re-rendered from it, so a document can be retried from"
-    say "  the start. The database rows are left alone."
+    printf '  %sThe PDFs are not recoverable.%s InvoGrid holds the only copy —\n' "$C_BOLD" "$C_RESET"
+    say "  they were uploaded to it, not fetched from somewhere that still has"
+    say "  them. Restore from a backup, or ask for them again."
+    say ""
+    say "  The page images alone would be safe to delete: they are re-rendered"
+    say "  from the PDF beside them. This command removes both."
+    say ""
+    say "  The database rows are left alone, so every document will show a"
+    say "  missing PDF rather than disappearing."
     say ""
     say "  The uploaded logos are NOT touched."
     say ""
@@ -612,8 +598,19 @@ cmd_refresh() {
     app_script bin/refresh-clearbooks.php "$@"
 }
 
+cmd_sync_invoices() {
+    # --force by default: somebody typing this has decided it should happen now.
+    # The bare script obeys the schedule, which is what cron wants and not what
+    # a person at a terminal means.
+    if [ "${1:-}" = "--status" ]; then
+        app_script bin/sync-invoices.php --status
+    else
+        app_script bin/sync-invoices.php --force "$@"
+    fi
+}
+
 cmd_retry() {
-    [ -n "${1:-}" ] || die "Which document? Usage: $0 retry ID   (the InvoGrid id, not the Paperless one)"
+    [ -n "${1:-}" ] || die "Which document? Usage: $0 retry ID"
 
     # Deliberately says who to be rather than doing it silently. Retrying is a
     # human decision that the web screen records against a person, and there is
@@ -671,9 +668,9 @@ cmd_backup() {
     #
     # A page image is re-rendered from the PDF beside it in seconds, so backing
     # them up doubles the size of every backup to save a step that costs
-    # nothing. The PDFs themselves are re-fetchable from Paperless in principle
-    # — but only while Paperless still has them, and a backup that depends on
-    # another system's retention policy is not a backup.
+    # nothing. The PDFs are the opposite case and must be in every backup:
+    # InvoGrid holds the only copy of an uploaded document, and nothing
+    # anywhere else can produce it again.
     local files="$dir/files-${stamp}.tar.gz"
     tar -czf "$files" -C "$APP_DIR/storage" \
         $( [ -d "$APP_DIR/storage/pdf" ] && echo pdf ) \
@@ -848,8 +845,8 @@ cmd_cron_install() {
 SHELL=/bin/bash
 PATH=/usr/local/sbin:/usr/local/bin:/sbin:/bin:/usr/sbin:/usr/bin
 
-# The queue worker. Every minute: a document arriving from Paperless waits at
-# most that long before anything happens to it. Overlapping runs are prevented
+# The queue worker. Every minute: an uploaded document waits at most that long
+# before anything happens to it. Overlapping runs are prevented
 # by a lock file inside the script, so a slow LLM call cannot pile up workers.
 * * * * * ${WEB_USER} ${PHP_BIN} ${APP_DIR}/bin/process-queue.php >/dev/null 2>&1
 
@@ -859,6 +856,13 @@ PATH=/usr/local/sbin:/usr/local/bin:/sbin:/bin:/usr/sbin:/usr/bin
 # the hour with everything else on the machine.
 17 * * * * ${WEB_USER} ${PHP_BIN} ${APP_DIR}/bin/refresh-clearbooks.php >/dev/null 2>&1
 
+# The local copy of the bills and credit notes already in Clear Books, which is
+# how a document that has been posted before is recognised. The schedule itself
+# lives in the database — this only offers the script the chance to decide it is
+# due, so an administrator can change "every N minutes" on the Clear Books
+# settings screen without editing this file.
+*/5 * * * * ${WEB_USER} ${PHP_BIN} ${APP_DIR}/bin/sync-invoices.php >/dev/null 2>&1
+
 # Nightly backup of the database, the PDFs and .env.
 15 2 * * * root ${APP_DIR}/manage.sh backup --quiet
 CRON
@@ -867,6 +871,7 @@ CRON
     ok "Wrote $file"
     say "  Queue      every minute"
     say "  Clear Books cache  hourly at :17"
+    say "  Invoice sync       every 5 minutes, fetching when the schedule says"
     say "  Backup     02:15, to $BACKUP_DIR, keeping the last $BACKUP_KEEP sets"
 }
 
@@ -926,7 +931,6 @@ case "$command" in
 
     settings)           cmd_settings ;;
     set-setting)        cmd_set_setting "${1:-}" ;;
-    webhook-secret)     cmd_webhook_secret ;;
     config)             cmd_config "$@" ;;
     migrate)            cmd_migrate "${1:-}" ;;
     db-grant)           cmd_db_grant ;;
@@ -935,6 +939,7 @@ case "$command" in
 
     queue)              cmd_queue "$@" ;;
     refresh)            cmd_refresh "$@" ;;
+    sync-invoices)      cmd_sync_invoices "$@" ;;
     retry)              cmd_retry "${1:-}" ;;
 
     backup)             cmd_backup "${1:-}" ;;

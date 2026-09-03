@@ -34,9 +34,6 @@ final class Setting
      * @var array<string,string>
      */
     private const ENV_FALLBACK = [
-        'paperless_base_url'       => 'integrations.paperless.base_url',
-        'paperless_token'          => 'integrations.paperless.token',
-        'paperless_webhook_secret' => 'integrations.paperless.webhook_secret',
         'clearbooks_base_url'      => 'integrations.clearbooks.base_url',
         'clearbooks_client_id'     => 'integrations.clearbooks.client_id',
         'clearbooks_client_secret' => 'integrations.clearbooks.client_secret',

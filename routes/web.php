@@ -9,12 +9,14 @@ use App\Controllers\BrandingController;
 use App\Controllers\ClearBooksController;
 use App\Controllers\DashboardController;
 use App\Controllers\DocumentController;
+use App\Controllers\DuplicateController;
+use App\Controllers\ExistingInvoiceController;
 use App\Controllers\FieldController;
 use App\Controllers\PromptController;
 use App\Controllers\ReviewController;
 use App\Controllers\SettingsController;
+use App\Controllers\UploadController;
 use App\Controllers\UserController;
-use App\Controllers\WebhookController;
 use App\Core\Router;
 
 /*
@@ -22,8 +24,9 @@ use App\Core\Router;
  *
  * Middleware is named here rather than checked inside a controller, so what a
  * route requires can be read off one line. 'csrf' is on every state-changing
- * route without exception — except the webhook receiver, which is not a browser
- * form and is authenticated by a shared secret instead.
+ * route without exception. Every route that accepts input is behind `auth`
+ * as well: there is no unauthenticated way into this application and no
+ * endpoint waiting to be given a shared secret.
  *
  * Every destination in the navigation is now a real route; nothing is
  * reserved for a later stage.
@@ -38,16 +41,6 @@ $router->get('/health', [AuthController::class, 'health']);
 
 // The logo, needed by the sign-in page before anyone is signed in.
 $router->get('/branding/{variant:light|dark}', [BrandingController::class, 'show']);
-
-/*
- * The Paperless webhook receiver.
- *
- * No session, no CSRF: the caller is a server, and the shared secret in
- * `paperless_webhook_secret` is what authenticates it. Paperless allows five
- * seconds and retries a non-2xx three times, so the handler registers the
- * document and returns — the work happens in the queue.
- */
-$router->post('/webhook/paperless', [WebhookController::class, 'receive'], [], 'webhook.paperless');
 
 // --- Signing in ------------------------------------------------------------
 
@@ -66,6 +59,22 @@ $router->group(['auth'], static function (Router $router): void {
     // The raw document list: the precursor to the review queue, and what makes
     // the pipeline visible while the rest of it is being built.
     $router->get('/documents', [DocumentController::class, 'index'], ['can:documents.view'], 'documents');
+
+    /*
+     * Ingest: how a document gets into InvoGrid at all.
+     *
+     * Declared before `/documents/{id}` out of habit rather than necessity —
+     * the id pattern is `\d+` and could not match "upload" — but the next route
+     * added here may not be numeric, and the order that is already right costs
+     * nothing.
+     *
+     * `documents.upload` rather than `documents.view`: accepting a file starts
+     * a pipeline that spends money on every page of it, which is a different
+     * question from being allowed to read the result.
+     */
+    $router->get('/documents/upload', [UploadController::class, 'form'], ['can:documents.upload'], 'documents.upload');
+    $router->post('/documents/upload', [UploadController::class, 'store'], ['can:documents.upload', 'csrf']);
+
     $router->get('/documents/{id:\d+}', [DocumentController::class, 'show'], ['can:documents.view'], 'documents.show');
     $router->get('/documents/{id:\d+}/pdf', [DocumentController::class, 'pdf'], ['can:documents.view'], 'documents.pdf');
     $router->get('/documents/{id:\d+}/page/{page:\d+}', [DocumentController::class, 'page'], ['can:documents.view'], 'documents.page');
@@ -105,6 +114,44 @@ $router->group(['auth'], static function (Router $router): void {
 
     $router->post('/review/{id:\d+}/submit', [ReviewController::class, 'submit'], ['can:documents.submit', 'csrf']);
 
+    /*
+     * The Existing Invoice queue — the other flow's review screen.
+     *
+     * Separate from `/review` rather than another tab on it, because the two
+     * screens ask different questions of different data. `/review` is a scan
+     * beside an extraction with entities to resolve; a document here has no
+     * extraction at all, and the question is which Clear Books record its
+     * handwritten number refers to.
+     *
+     * Same split as `/review`: `queue.view` to look, `review.resolve` to act.
+     * Deleting is its own capability — see `Auth::CAPABILITIES` — because it is
+     * the one action in this application that cannot be undone.
+     */
+    $router->get('/existing', [ExistingInvoiceController::class, 'index'], ['can:queue.view'], 'existing');
+    $router->get('/existing/{id:\d+}', [ExistingInvoiceController::class, 'show'], ['can:queue.view'], 'existing.show');
+    $router->post('/existing/{id:\d+}/link', [ExistingInvoiceController::class, 'link'], ['can:review.resolve', 'csrf']);
+    $router->post('/existing/{id:\d+}/new-invoice', [ExistingInvoiceController::class, 'pushToNew'], ['can:review.resolve', 'csrf']);
+    $router->post('/existing/{id:\d+}/delete', [ExistingInvoiceController::class, 'delete'], ['can:documents.delete', 'csrf']);
+
+    /*
+     * The duplicate queue — the New Invoice route's own gate.
+     *
+     * A third queue rather than a filter on either of the other two, because it
+     * asks a third question. `/review` is "is this extraction right"; `/existing`
+     * is "which Clear Books record does this number point at"; this one is "is
+     * this invoice one Clear Books already has, even though nobody wrote a
+     * number on it". A document here has no reference to resolve and nothing
+     * wrong with its extraction — it may simply already have been posted.
+     *
+     * The same split again: `queue.view` to look, `review.resolve` to push a
+     * document on, and `documents.delete` for the one action that cannot be
+     * undone.
+     */
+    $router->get('/duplicates', [DuplicateController::class, 'index'], ['can:queue.view'], 'duplicates');
+    $router->get('/duplicates/{id:\d+}', [DuplicateController::class, 'show'], ['can:queue.view'], 'duplicates.show');
+    $router->post('/duplicates/{id:\d+}/not-duplicate', [DuplicateController::class, 'notDuplicate'], ['can:review.resolve', 'csrf']);
+    $router->post('/duplicates/{id:\d+}/delete', [DuplicateController::class, 'delete'], ['can:documents.delete', 'csrf']);
+
     // The escape hatch, and deliberately not on the ordinary path: a document
     // that has been submitted shows no submit button anywhere. Admin only, and
     // it creates a *second* record in Clear Books — the first is not withdrawn,
@@ -114,17 +161,14 @@ $router->group(['auth'], static function (Router $router): void {
     /*
      * The settings themselves.
      *
-     * `/admin/settings/document-types` is declared **before** the section form,
-     * which is belt and braces: the section pattern is `[a-z_]+` and cannot
-     * match a hyphen, so the two could not collide, but the next section named
-     * with a hyphen would silently be swallowed by the generic route if this
-     * order were reversed.
-     *
      * One POST per card rather than one for the page, so a rejected Clear Books
      * address does not discard what was typed into the model boxes.
+     *
+     * Note that the section pattern is `[a-z_]+` and cannot match a hyphen. A
+     * section named with one would need declaring above the generic route
+     * below, or it would be swallowed by it.
      */
     $router->get('/admin/settings', [SettingsController::class, 'index'], ['can:settings.manage'], 'settings');
-    $router->post('/admin/settings/document-types', [SettingsController::class, 'saveDocumentTypes'], ['can:settings.manage', 'csrf']);
 
     // POST rather than GET, and not because anything is written: a model test
     // is a paid API call, and a GET is something a browser may repeat on its
@@ -159,7 +203,12 @@ $router->group(['auth'], static function (Router $router): void {
     $router->post('/admin/clearbooks/connect', [ClearBooksController::class, 'connect'], ['can:settings.manage', 'csrf']);
     $router->post('/admin/clearbooks/disconnect', [ClearBooksController::class, 'disconnect'], ['can:settings.manage', 'csrf']);
     $router->post('/admin/clearbooks/refresh', [ClearBooksController::class, 'refresh'], ['can:settings.manage', 'csrf']);
-    $router->post('/admin/clearbooks/sync', [ClearBooksController::class, 'sync'], ['can:settings.manage', 'csrf']);
+
+    // The purchase-document sync: the local copy of what Clear Books already
+    // holds, and the schedule it is fetched on. Both `settings.manage` — the
+    // schedule decides how often somebody else's API is walked end to end.
+    $router->post('/admin/clearbooks/sync-invoices', [ClearBooksController::class, 'syncInvoices'], ['can:settings.manage', 'csrf']);
+    $router->post('/admin/clearbooks/invoice-schedule', [ClearBooksController::class, 'invoiceSchedule'], ['can:settings.manage', 'csrf']);
     $router->post('/admin/clearbooks/supplier-route', [ClearBooksController::class, 'supplierRoute'], ['can:settings.manage', 'csrf']);
 
     /*

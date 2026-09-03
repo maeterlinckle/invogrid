@@ -51,6 +51,7 @@ $router = require $app . '/routes/web.php';
 // Real ids to substitute into {id} patterns, so a 404 is not mistaken for a 403.
 $documentId  = (int) (Database::scalar('SELECT id FROM documents ORDER BY id LIMIT 1') ?? 1);
 $reviewId    = (int) (Database::scalar("SELECT id FROM documents WHERE status IN ('needs_review','ready_to_submit') ORDER BY id LIMIT 1") ?? $documentId);
+$linkId      = (int) (Database::scalar("SELECT id FROM documents WHERE status = 'needs_link' ORDER BY id LIMIT 1") ?? $documentId);
 $matchId     = (int) (Database::scalar('SELECT id FROM entity_matches ORDER BY id LIMIT 1') ?? 1);
 $fieldId     = (int) (Database::scalar('SELECT id FROM custom_fields ORDER BY id LIMIT 1') ?? 1);
 $userId      = (int) (Database::scalar('SELECT id FROM users ORDER BY id LIMIT 1') ?? 1);
@@ -65,13 +66,18 @@ $substitutions = [
 ];
 
 /** Turn a route pattern into a URL that will actually resolve. */
-$concrete = static function (string $pattern) use ($substitutions, $reviewId, $fieldId, $userId, $promptRowId): string {
+$concrete = static function (string $pattern) use ($substitutions, $reviewId, $linkId, $fieldId, $userId, $promptRowId): string {
     $path = $pattern;
 
     // Context-sensitive ids, so /review/{id} gets a document that is in review
     // and /admin/fields/{id} gets a field rather than a document.
     if (str_starts_with($path, '/review/')) {
         $path = str_replace('{id:\d+}', (string) $reviewId, $path);
+    } elseif (str_starts_with($path, '/existing/')) {
+        // The queue screens redirect a document that is not waiting to be
+        // linked, and a 302 to the document page would read as "allowed" for a
+        // role that should have been refused.
+        $path = str_replace('{id:\d+}', (string) $linkId, $path);
     } elseif (str_starts_with($path, '/admin/fields/')) {
         $path = str_replace('{id:\d+}', (string) $fieldId, $path);
     } elseif (str_starts_with($path, '/admin/users/')) {
@@ -186,7 +192,7 @@ function shouldAllow(string $role, ?string $requires): bool
 // --- Run -------------------------------------------------------------------
 
 $open = [
-    'GET /health', 'GET /branding/{variant:light|dark}', 'POST /webhook/paperless',
+    'GET /health', 'GET /branding/{variant:light|dark}',
     'GET /login', 'POST /login',
 ];
 

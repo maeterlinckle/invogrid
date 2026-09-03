@@ -40,10 +40,34 @@ final class Auth
             'queue.view',
         ],
         'reviewer' => [
+            // Putting a document into the pipeline spends money — every page
+            // goes to a vision model and the extraction runs three more calls
+            // — so it sits with `documents.retry` rather than with viewing. A
+            // viewer can read everything and start nothing.
+            'documents.upload',
             'documents.retry',
             'review.resolve',
             'entities.create',
             'documents.submit',
+
+            /*
+             * Deleting a document outright, which is the only irreversible
+             * destruction in this application — the row, the transcription and
+             * the stored PDF all go, and `ignored` is what everything else
+             * means by "take this out of the way".
+             *
+             * Its own capability rather than folded into `review.resolve`,
+             * because it is a different kind of act and somebody may well want
+             * to move it to `admin`: that is one line here and nothing else.
+             *
+             * A reviewer holds it because the Existing Invoice queue is a
+             * reviewer's screen and it is one of the three answers that queue
+             * offers — a queue with a resolution its own audience cannot reach
+             * is a queue that stops being worked. The controls on it are the
+             * required reason and the audit row, which outlives the document by
+             * design.
+             */
+            'documents.delete',
         ],
         'admin' => [
             'settings.manage',

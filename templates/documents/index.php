@@ -12,7 +12,7 @@ use App\Models\Document;
  * @var array<int,array<string,mixed>> $documents
  * @var array<string,string>           $filters
  * @var bool                           $filtered  Any filter is in force
- * @var array<int,string>              $correspondents
+ * @var array<int,string>              $supplierNames
  * @var array<int,array<string,mixed>> $docTypes
  * @var int                            $total
  * @var int                            $page
@@ -49,7 +49,7 @@ $pageUrl = static function (int $page) use ($filters): string {
 <div class="page-head">
     <div>
         <h1>Documents</h1>
-        <p class="muted">Everything Paperless has told InvoGrid about.</p>
+        <p class="muted">Everything InvoGrid has been given, however it arrived.</p>
     </div>
 
     <?php if ($queue['queued'] > 0 || $queue['running'] > 0): ?>
@@ -63,11 +63,11 @@ $pageUrl = static function (int $page) use ($filters): string {
     <div class="field field-wide">
         <label class="label" for="q">Search</label>
         <input class="input" type="search" id="q" name="q" value="<?= e($filters['q']) ?>"
-               placeholder="Supplier, invoice number, title, or a Paperless id">
+               placeholder="Supplier, invoice number, title, filename, or a document number">
         <p class="field-hint">
-            A number is read as a Paperless id. Anything else is matched against the
-            correspondent, and against the supplier name, invoice number and title the
-            extraction read off the page.
+            A number is read as a document number — the one on the printed summary. Anything
+            else is matched against the supplier and the filename it arrived as, and against
+            the supplier name, invoice number and title the extraction read off the page.
         </p>
     </div>
 
@@ -97,13 +97,13 @@ $pageUrl = static function (int $page) use ($filters): string {
     </div>
 
     <div class="field">
-        <label class="label" for="correspondent">Correspondent</label>
+        <label class="label" for="supplier">Supplier</label>
         <?php /* A list rather than a box: "Acme Supplies Ltd" and "Acme Supplies
                  Limited" are two different filters and only one finds anything. */ ?>
-        <select class="input" id="correspondent" name="correspondent">
+        <select class="input" id="supplier" name="supplier">
             <option value="">Anyone</option>
-            <?php foreach ($correspondents as $name): ?>
-                <option value="<?= e($name) ?>" <?= $filters['correspondent'] === $name ? 'selected' : '' ?>>
+            <?php foreach ($supplierNames as $name): ?>
+                <option value="<?= e($name) ?>" <?= $filters['supplier'] === $name ? 'selected' : '' ?>>
                     <?= e($name) ?>
                 </option>
             <?php endforeach; ?>
@@ -145,12 +145,12 @@ $pageUrl = static function (int $page) use ($filters): string {
         <caption class="sr-only">Documents and their pipeline stage</caption>
         <thead>
             <tr>
-                <th scope="col">Paperless</th>
-                <th scope="col">Supplier</th>
-                <th scope="col">Type</th>
-                <th scope="col">Stage</th>
-                <th scope="col">Received</th>
-                <th scope="col"><span class="sr-only">Actions</span></th>
+                <th scope="col" class="col-tight">Document</th>
+                <th scope="col" class="col-grow">Supplier</th>
+                <th scope="col" class="col-narrow">Type</th>
+                <th scope="col" class="col-narrow">Stage</th>
+                <th scope="col" class="col-date">Received</th>
+                <th scope="col" class="col-tight"><span class="sr-only">Actions</span></th>
             </tr>
         </thead>
         <tbody>
@@ -158,8 +158,8 @@ $pageUrl = static function (int $page) use ($filters): string {
                 <tr>
                     <td class="empty" colspan="6">
                         <?php if ($total === 0 && !$filtered): ?>
-                            No documents yet. One appears here as soon as a Paperless workflow
-                            posts to the webhook receiver.
+                            No documents yet. <a href="<?= e(url('/documents/upload')) ?>">Upload one</a>
+                            and it appears here straight away.
                         <?php else: ?>
                             Nothing matches that filter.
                         <?php endif; ?>
@@ -169,9 +169,9 @@ $pageUrl = static function (int $page) use ($filters): string {
                 <?php foreach ($documents as $document): ?>
                     <?php $status = (string) $document['status']; ?>
                     <tr<?= $status === Document::IGNORED ? ' class="row-muted"' : '' ?>>
-                        <td class="mono nowrap">#<?= (int) $document['paperless_doc_id'] ?></td>
+                        <td class="mono nowrap">#<?= (int) $document['id'] ?></td>
                         <td>
-                            <?= e($document['correspondent_raw'] ?? '—') ?>
+                            <?= e($document['supplier_raw'] ?? '—') ?>
                             <?php if ($document['error_message'] !== null): ?>
                                 <div class="cell-sub text-danger"><?= e(str_limit((string) $document['error_message'], 90)) ?></div>
                             <?php endif; ?>

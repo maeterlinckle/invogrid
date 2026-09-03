@@ -40,6 +40,23 @@ use RuntimeException;
  * extraction flagged nothing. Anything else goes to `needs_review` with the
  * reason attached. Nothing below full confidence is ever auto-created in Clear
  * Books.
+ *
+ * **This is also where the two flows part.** A document whose `route` is
+ * `existing_invoice` is a scan of something already in Clear Books, and goes to
+ * `existing_invoice` — the head of the linking stage — instead. It runs
+ * everything above first, and for the same reasons: the extraction and the
+ * entity matches are the document's record, wanted for search and reporting
+ * whether or not anything is ever posted from them.
+ *
+ * **And it is where a New Invoice document is checked for being one anyway.**
+ * The route was decided on whether somebody wrote a Clearbooks Number on the
+ * page, which answers a different question from whether Clear Books already
+ * holds the invoice. So a document taking the New Invoice exit is compared
+ * against the synced purchase documents first (`DuplicateMatcher`, §34), and a
+ * plausible match sends it to `possible_duplicate` rather than to either
+ * disposition. That check runs here rather than in a stage of its own because
+ * it wants `documents.matched_supplier_id`, which the lines above are what
+ * produce.
  */
 final class MatchStage
 {
@@ -131,6 +148,91 @@ final class MatchStage
 
         Extraction::setMatchOutcome($extractionId, array_merge($flaggedEarlier, $notes), !$ready);
 
+        /*
+         * The fork.
+         *
+         * An existing-invoice document goes to the linking stage **whatever the
+         * entities did**, and the difference is not laxness — it is that the
+         * things above gate a *creation*. An unresolved account code decides
+         * which nominal a new bill is posted to; a VAT rate decides what is
+         * reclaimed; the credit-note question decides which way money moves.
+         * None of that is asked here, because nothing is posted: the record was
+         * entered by a person months ago and InvoGrid is only attaching the
+         * scan to it.
+         *
+         * What was unresolved is still written down — `entity_matches`, the
+         * review notes and `needs_review` on the extraction are all set above,
+         * a few lines up — so nothing is lost and a person looking at the
+         * document can see it. It simply does not hold the document up.
+         *
+         * The gate on *this* flow is the checksum in `LinkStage`, and it is
+         * stricter than anything here: the Clearbooks Number must find exactly
+         * one Clear Books record whose date and gross total agree exactly.
+         */
+        if ((string) ($document['route'] ?? '') === Document::ROUTE_EXISTING) {
+            DocumentEvent::record($documentId, 'match', DocumentEvent::SUCCEEDED, sprintf(
+                '%d entit%s checked, %d unresolved. This is an existing invoice, so it goes to be '
+                . 'matched against the Clear Books record rather than submitted as a new one.',
+                count($rows),
+                count($rows) === 1 ? 'y' : 'ies',
+                count($unresolved)
+            ));
+
+            return Document::EXISTING_INVOICE;
+        }
+
+        /*
+         * The duplicate gate, and it is the *other* branch this stage takes.
+         *
+         * A New Invoice document is here because nobody wrote a Clearbooks
+         * Number on it. That is what routed it, and it is not the same fact as
+         * "Clear Books does not already hold this invoice" — a bill entered by
+         * hand months ago carries no annotation, and neither does a second scan
+         * of one already filed. Submitting it would put the same purchase into
+         * somebody's accounts twice, which is found by a payment run rather
+         * than by anything here.
+         *
+         * **Before the ready/needs-review decision, not after it**, and that
+         * ordering is the point:
+         *
+         *  - a document whose entities all resolved would otherwise sit in
+         *    `ready_to_submit` inviting exactly the double post this exists to
+         *    stop, with a submit button on it;
+         *  - a document whose entities did not would otherwise send somebody
+         *    off to resolve an account code on a bill they are about to delete.
+         *
+         * Everything above still ran and is still written down, exactly as for
+         * an existing-invoice document: `entity_matches`, the review notes and
+         * `needs_review` on the extraction are all set a few lines up. A
+         * document confirmed as genuinely new keeps all of it and lands
+         * wherever this stage would have sent it, because the re-run comes
+         * straight back through here.
+         */
+        if (($document['duplicate_cleared_at'] ?? null) === null) {
+            $duplicates = DuplicateMatcher::against($document, $extraction);
+
+            if ($duplicates['plausible'] !== []) {
+                DocumentEvent::record($documentId, 'dedup', DocumentEvent::SKIPPED, $duplicates['summary']);
+
+                return Document::POSSIBLE_DUPLICATE;
+            }
+
+            // Recorded even when it finds nothing, because "checked, and there
+            // is nothing like it" is the answer somebody asking why a document
+            // sailed through wants — and an absent event is indistinguishable
+            // from a check that never ran.
+            DocumentEvent::record($documentId, 'dedup', DocumentEvent::SUCCEEDED, sprintf(
+                '%s %s',
+                $duplicates['summary'],
+                $duplicates['compared'] === 0
+                    ? 'No purchase document in Clear Books shares its total or its reference.'
+                    : sprintf(
+                        '%d Clear Books record(s) sharing its total or its reference were compared.',
+                        $duplicates['compared']
+                    )
+            ));
+        }
+
         DocumentEvent::record($documentId, 'match', DocumentEvent::SUCCEEDED, sprintf(
             '%d entit%s checked, %d unresolved. %s',
             count($rows),
@@ -156,6 +258,20 @@ final class MatchStage
      * Only from the statuses where re-matching means something. A submitted
      * document is not re-checked; nor is one somebody has ignored.
      *
+     * `existing_invoice` and `needs_link` are on the list because this is also
+     * how a route is overruled. The Existing Invoice queue's "treat it as a new
+     * invoice" writes `route = new_invoice` and calls this; the stage runs
+     * again, takes the other exit, and the document lands in the ordinary review
+     * queue with the extraction it already has. Re-deciding through the one
+     * implementation is the point — a second copy of "where does this document
+     * go now" would disagree with this one eventually, invisibly.
+     *
+     * `possible_duplicate` is on it for exactly the same reason, and is the one
+     * way *off* that status. The duplicate queue's "it is genuinely new" stamps
+     * `documents.duplicate_cleared_at` and calls this; the gate below reads
+     * that column, so the same run reaches a different exit and the document
+     * lands wherever the entities put it.
+     *
      * @return string The status the document is now in
      */
     public static function recheck(int $documentId): string
@@ -168,7 +284,14 @@ final class MatchStage
 
         $status = (string) $document['status'];
 
-        if (!in_array($status, [Document::NEEDS_REVIEW, Document::READY_TO_SUBMIT, Document::MATCHING], true)) {
+        if (!in_array($status, [
+            Document::NEEDS_REVIEW,
+            Document::READY_TO_SUBMIT,
+            Document::MATCHING,
+            Document::EXISTING_INVOICE,
+            Document::NEEDS_LINK,
+            Document::POSSIBLE_DUPLICATE,
+        ], true)) {
             return $status;
         }
 

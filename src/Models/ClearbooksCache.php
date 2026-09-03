@@ -96,13 +96,9 @@ final class ClearbooksCache
 
             switch ($entityType) {
                 case self::SUPPLIER:
-                    // Both ids, because the supplier prompt returns both: the
-                    // Clear Books one to submit against, the Paperless one to
-                    // set the document's correspondent.
-                    $entry['cbId']       = (string) $row['remote_id'];
-                    $entry['paperlessId'] = $row['paperless_correspondent_id'] === null
-                        ? null
-                        : (int) $row['paperless_correspondent_id'];
+                    // `cbId` as well as `id`, because that is the name the
+                    // supplier prompt is written against and the one it returns.
+                    $entry['cbId'] = (string) $row['remote_id'];
 
                     foreach (['vatNumber', 'companyNumber', 'tradingNames'] as $key) {
                         if (isset($raw[$key]) && $raw[$key] !== '' && $raw[$key] !== []) {
@@ -165,7 +161,7 @@ final class ClearbooksCache
         return null;
     }
 
-    // --- The write side, used by the refresh and the correspondent sync -----
+    // --- The write side, used by the refresh ----------------------------
 
     /**
      * Store one entity, inserting or updating as needed.
@@ -175,8 +171,9 @@ final class ClearbooksCache
      * that produces it.
      *
      * Note that this **reactivates** a row it finds deactivated: a supplier
-     * unarchived in Clear Books comes back with its Paperless link intact,
-     * rather than as a new record whose correspondent has to be found again.
+     * unarchived in Clear Books comes back as the same row, keeping the local
+     * knowledge held against it — its usual credit route, and the documents
+     * already matched to it — rather than starting again as a new record.
      *
      * @param array<string,mixed> $raw The record as Clear Books returned it
      * @return string 'created' | 'updated' | 'unchanged'
@@ -217,11 +214,10 @@ final class ClearbooksCache
     /**
      * Deactivate everything of this type that the latest refresh did not see.
      *
-     * Deactivated rather than deleted, for two reasons. A document already
-     * matched against a supplier keeps a resolvable record of what it matched;
-     * and `paperless_correspondent_id` survives, which is the only link back to
-     * the correspondent that now has to be dealt with. The correspondent sync
-     * reads exactly these rows.
+     * Deactivated rather than deleted: a document already matched against a
+     * supplier keeps a resolvable record of what it matched, and the local
+     * knowledge held against the row — `default_credit_route` — survives an
+     * archive-and-unarchive in Clear Books.
      *
      * @param array<int,string> $seenRemoteIds
      * @return int How many were deactivated
@@ -322,8 +318,7 @@ final class ClearbooksCache
      * choice rather than an assumption.
      *
      * It survives a cache refresh because `upsert()` writes only the columns it
-     * gets from the API, which is the same reason `paperless_correspondent_id`
-     * lives here.
+     * gets from the API, and this is not one of them.
      */
     public static function setDefaultCreditRoute(int $id, ?string $typeKey): void
     {
@@ -344,28 +339,6 @@ final class ClearbooksCache
         return $row === null || ($row['default_credit_route'] ?? null) === null
             ? null
             : (string) $row['default_credit_route'];
-    }
-
-    /** Point a cached supplier at its Paperless correspondent. */
-    public static function linkCorrespondent(int $id, ?int $correspondentId): void
-    {
-        Database::update('clearbooks_cache', ['paperless_correspondent_id' => $correspondentId], $id);
-    }
-
-    /**
-     * Suppliers that are no longer in Clear Books but still have a
-     * correspondent pointing at them — the sync's demolition list.
-     *
-     * @return array<int,array<string,mixed>>
-     */
-    public static function orphanedCorrespondents(): array
-    {
-        return Database::select(
-            'SELECT * FROM clearbooks_cache
-              WHERE entity_type = ? AND active = 0 AND paperless_correspondent_id IS NOT NULL
-              ORDER BY name',
-            [self::SUPPLIER]
-        );
     }
 
     /**

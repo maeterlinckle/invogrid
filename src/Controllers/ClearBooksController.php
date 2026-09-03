@@ -11,11 +11,12 @@ use App\Core\Response;
 use App\Core\Session;
 use App\Models\AuditLog;
 use App\Models\ClearbooksCache;
+use App\Models\ClearbooksInvoice;
 use App\Models\DocumentType;
 use App\Models\Setting;
 use App\Services\CacheRefresh;
 use App\Services\ClearBooksClient;
-use App\Services\SupplierSync;
+use App\Services\InvoiceSync;
 use Throwable;
 
 /**
@@ -59,8 +60,14 @@ final class ClearBooksController extends Controller
             // to wait for a document before it can be written down.
             'suppliers'   => ClearbooksCache::all(ClearbooksCache::SUPPLIER),
             'creditTypes' => DocumentType::all(),
-            'syncOn'      => Setting::bool('clearbooks_sync_correspondents', true),
-            'deleteOn'    => Setting::bool('clearbooks_delete_correspondents', true),
+
+            // The invoice sync: the local copy of what Clear Books already
+            // holds, which is what a duplicate check will be asked about.
+            'invoices'        => ClearbooksInvoice::summary(),
+            'recentInvoices'  => ClearbooksInvoice::recent(8),
+            'syncInterval'    => InvoiceSync::intervalMinutes(),
+            'syncLastRun'     => InvoiceSync::lastRun(),
+            'syncDueAt'       => InvoiceSync::dueAt(),
         ]);
     }
 
@@ -163,24 +170,98 @@ final class ClearBooksController extends Controller
     }
 
     /**
-     * Mirror suppliers into Paperless correspondents now.
+     * Fetch every bill and credit note now, rather than waiting for cron.
      *
-     * The dry run is the default offered on the screen, because this is the one
-     * action in InvoGrid that changes somebody else's system.
+     * The same call the cron script makes, deliberately: a button with its own
+     * implementation proves only that the button works.
+     *
+     * Two things this does that the cache refresh does not have to. It takes
+     * the sync lock, so pressing it during a cron run waits for the next
+     * moment rather than sending a second walk of the whole list at a
+     * rate-limited API. And it lifts the time limit: a business with ten years
+     * of purchases is thousands of records fetched two hundred at a time and
+     * paced to five requests a second, which is minutes rather than seconds.
      */
-    public function sync(): void
+    public function syncInvoices(): void
     {
-        $dryRun = Request::boolean('dry_run');
-
         try {
-            $tally = SupplierSync::run($dryRun);
+            $lock = InvoiceSync::lock();
         } catch (Throwable $e) {
             Flash::error($e->getMessage());
             Response::redirect('/admin/clearbooks');
         }
 
-        Flash::success(($dryRun ? 'Dry run — nothing was changed. ' : 'Correspondents synced. ')
-            . SupplierSync::describe($tally));
+        if ($lock === null) {
+            Flash::error('A sync is already running — either the scheduled one or somebody else’s. '
+                . 'Give it a moment and reload this page.');
+            Response::redirect('/admin/clearbooks');
+        }
+
+        set_time_limit(0);
+
+        // Finish even if the browser gives up first. A gateway timeout leaves
+        // the fetch half done, and half done is the one state that must not be
+        // reconciled against — so the run is allowed to reach its own end,
+        // where it either deletes on a complete list or deletes nothing.
+        ignore_user_abort(true);
+
+        try {
+            $tally = InvoiceSync::run(null, 'manual');
+        } catch (Throwable $e) {
+            // Released here rather than in a `finally`: `Response::redirect()`
+            // exits, and `finally` does not run after `exit`.
+            InvoiceSync::unlock($lock);
+
+            Flash::error($e->getMessage());
+            Response::redirect('/admin/clearbooks');
+        }
+
+        InvoiceSync::unlock($lock);
+
+        Flash::success('Synced from Clear Books. ' . InvoiceSync::describe($tally));
+        Response::redirect('/admin/clearbooks');
+    }
+
+    /**
+     * How often the invoice sync runs.
+     *
+     * Minutes, not a cron expression — cron already runs the script every few
+     * minutes and this decides whether a run is due, which is what makes the
+     * schedule editable by somebody without a shell. 0 turns it off, leaving
+     * the button; the range is otherwise `InvoiceSync`'s, because a value the
+     * service would clamp is a value this screen should not have accepted.
+     */
+    public function invoiceSchedule(): void
+    {
+        $raw = trim((string) Request::post('interval_minutes', ''));
+
+        if ($raw === '' || !ctype_digit($raw)) {
+            Flash::error('The sync interval has to be a whole number of minutes, or 0 to turn it off.');
+            Response::redirect('/admin/clearbooks');
+        }
+
+        $minutes = (int) $raw;
+
+        if ($minutes !== 0 && ($minutes < InvoiceSync::MIN_INTERVAL || $minutes > InvoiceSync::MAX_INTERVAL)) {
+            Flash::error(sprintf(
+                'The sync interval has to be between %d and %d minutes, or 0 to turn it off.',
+                InvoiceSync::MIN_INTERVAL,
+                InvoiceSync::MAX_INTERVAL
+            ));
+            Response::redirect('/admin/clearbooks');
+        }
+
+        Setting::put(InvoiceSync::INTERVAL_KEY, (string) $minutes);
+
+        AuditLog::record('clearbooks.invoice_schedule_set', null, sprintf(
+            '%s set the invoice sync to %s.',
+            Auth::displayName(),
+            $minutes === 0 ? 'run only when asked' : 'run every ' . $minutes . ' minutes'
+        ));
+
+        Flash::success($minutes === 0
+            ? 'The invoice sync will now run only when you press Sync now.'
+            : 'The invoice sync will run every ' . $minutes . ' minutes.');
 
         Response::redirect('/admin/clearbooks');
     }
